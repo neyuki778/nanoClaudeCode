@@ -4,13 +4,12 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
-	"github.com/joho/godotenv"
+	"nanocc/demo/internal/common"
+
 	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/responses"
 )
 
@@ -20,21 +19,14 @@ type TurnItem struct {
 }
 
 func main() {
-	loadDotEnv()
-
-	baseURL := normalizeBaseURL(getenv("OPENAI_BASE_URL", "http://localhost:11434/v1"))
-	apiKey := normalizeAPIKey(getenv("OPENAI_API_KEY", ""))
-	model := getenv("OPENAI_MODEL", "gpt-4o")
-	if apiKey == "" {
+	cfg := common.LoadConfig()
+	if cfg.APIKey == "" {
 		panic("OPENAI_API_KEY is empty")
 	}
 
-	client := openai.NewClient(
-		option.WithBaseURL(baseURL),
-		option.WithAPIKey(apiKey),
-	)
+	client := common.NewClient(cfg)
 
-	fmt.Printf("Chatbot started. base_url=%s model=%s\n", baseURL, model)
+	fmt.Printf("Chatbot started. base_url=%s model=%s\n", cfg.BaseURL, cfg.Model)
 	fmt.Println("Type your message. Commands: /reset, /exit")
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -62,7 +54,7 @@ func main() {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		params := responses.ResponseNewParams{
-			Model: openai.ResponsesModel(model),
+			Model: openai.ResponsesModel(cfg.Model),
 			Input: responses.ResponseNewParamsInputUnion{
 				OfString: openai.String(buildPrompt(history, text, 12)),
 			},
@@ -86,32 +78,6 @@ func main() {
 	if err := scanner.Err(); err != nil {
 		fmt.Printf("input error: %v\n", err)
 	}
-}
-
-func loadDotEnv() {
-	_ = godotenv.Overload(".env", "../.env", "../../.env")
-}
-
-func getenv(key, fallback string) string {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return fallback
-	}
-	return v
-}
-
-func normalizeAPIKey(v string) string {
-	v = strings.TrimSpace(v)
-	v = strings.TrimPrefix(v, "Bearer ")
-	return strings.TrimSpace(v)
-}
-
-func normalizeBaseURL(v string) string {
-	v = strings.TrimSpace(v)
-	v = strings.TrimRight(v, "/")
-	v = strings.TrimSuffix(v, "/chat/completions")
-	v = strings.TrimSuffix(v, "/responses")
-	return v
 }
 
 func buildPrompt(history []TurnItem, input string, maxTurns int) string {
