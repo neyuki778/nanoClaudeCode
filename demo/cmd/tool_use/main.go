@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,9 +18,24 @@ import (
 )
 
 var (
-	developerMessage = "You are a coding agent. Use tool `bash` when execution is needed. When task is complete, reply directly."
-	bashDescription  = "Execute a shell command in current workspace and return stdout/stderr."
+	developerMessage = "You are a coding agent. Use tools `bash`, `read_file`, and `write_file` when needed. When task is complete, reply directly."
 )
+
+type toolHandler func(arguments string) string
+
+type toolSpec struct {
+	Name        string
+	Description string
+	Parameters  map[string]any
+	Handler     toolHandler
+}
+
+type toolField struct {
+	Name        string
+	Type        string
+	Description string
+	Required    bool
+}
 
 func main() {
 	cfg := common.LoadConfig()
@@ -29,26 +45,9 @@ func main() {
 
 	client := common.NewClient(cfg)
 
-	// 初始化可用的 tools
-	tools := []responses.ToolUnionParam{
-		{
-			OfFunction: &responses.FunctionToolParam{
-				Name:        "bash",
-				Description: openai.String(bashDescription),
-				Parameters: map[string]any{
-					"type":                 "object",
-					"additionalProperties": false,
-					"properties": map[string]any{
-						"command": map[string]any{
-							"type":        "string",
-							"description": "Shell command to run",
-						},
-					},
-					"required": []string{"command"},
-				},
-			},
-		},
-	}
+	specs := defaultToolSpecs()
+	tools := buildTools(specs)
+	handlers := buildToolHandlers(specs)
 
 	messages := []responses.ResponseInputItemUnionParam{
 		responses.ResponseInputItemParamOfMessage(developerMessage, responses.EasyInputMessageRoleDeveloper),
@@ -81,7 +80,7 @@ func main() {
 		}
 
 		messages = append(messages, responses.ResponseInputItemParamOfMessage(text, responses.EasyInputMessageRoleUser))
-		answer, err := runToolLoop(client, cfg.Model, tools, messages)
+		answer, err := runToolLoop(client, cfg.Model, tools, handlers, messages)
 		if err != nil {
 			fmt.Printf("error: %v\n", err)
 			continue
@@ -102,6 +101,7 @@ func runToolLoop(
 	client openai.Client,
 	model string,
 	tools []responses.ToolUnionParam,
+	handlers map[string]toolHandler,
 	messages []responses.ResponseInputItemUnionParam,
 ) (string, error) {
 	inputItems := append([]responses.ResponseInputItemUnionParam{}, messages...)
@@ -129,20 +129,13 @@ func runToolLoop(
 			// 显式回放 function_call，便于不支持 previous_response_id tool state 的服务端匹配 call_id
 			followUpItems = append(followUpItems, responses.ResponseInputItemParamOfFunctionCall(item.Arguments, item.CallID, item.Name))
 
-			if item.Name != "bash" {
+			handler, ok := handlers[item.Name]
+			if !ok {
 				followUpItems = append(followUpItems, responses.ResponseInputItemParamOfFunctionCallOutput(item.CallID, "unsupported tool"))
 				continue
 			}
 
-			cmd, err := parseCommand(item.Arguments)
-			fmt.Printf("Tool use: %s\n", cmd)
-			if err != nil {
-				followUpItems = append(followUpItems, responses.ResponseInputItemParamOfFunctionCallOutput(item.CallID, "invalid args: "+err.Error()))
-				continue
-			}
-
-			// run bash 的结果
-			out := runBash(cmd)
+			out := handler(item.Arguments)
 			fmt.Printf("Tool use output: %s\n", out)
 			followUpItems = append(followUpItems, responses.ResponseInputItemParamOfFunctionCallOutput(item.CallID, out))
 		}
@@ -157,6 +150,97 @@ func runToolLoop(
 	return "", fmt.Errorf("tool loop exceeded max steps")
 }
 
+func defaultToolSpecs() []toolSpec {
+	return []toolSpec{
+		newTool(
+			"bash",
+			"Execute a shell command in current workspace and return stdout/stderr.",
+			bashHandler,
+			reqString("command", "Shell command to run"),
+		),
+		newTool(
+			"read_file",
+			"Read file contents from workspace.",
+			readFileHandler,
+			reqString("path", "Relative file path to read"),
+			optInteger("limit", "Max bytes to return (optional)"),
+		),
+		newTool(
+			"write_file",
+			"Write file contents into workspace.",
+			writeFileHandler,
+			reqString("path", "Relative file path to write"),
+			reqString("content", "File content to write"),
+		),
+	}
+}
+
+func newTool(name, description string, handler toolHandler, fields ...toolField) toolSpec {
+	return toolSpec{
+		Name:        name,
+		Description: description,
+		Parameters:  objectSchemaFromFields(fields...),
+		Handler:     handler,
+	}
+}
+
+func reqString(name, description string) toolField {
+	return toolField{Name: name, Type: "string", Description: description, Required: true}
+}
+
+func optInteger(name, description string) toolField {
+	return toolField{Name: name, Type: "integer", Description: description, Required: false}
+}
+
+func buildTools(specs []toolSpec) []responses.ToolUnionParam {
+	tools := make([]responses.ToolUnionParam, 0, len(specs))
+	for _, spec := range specs {
+		tools = append(tools, responses.ToolUnionParam{
+			OfFunction: &responses.FunctionToolParam{
+				Name:        spec.Name,
+				Description: openai.String(spec.Description),
+				Parameters:  spec.Parameters,
+			},
+		})
+	}
+	return tools
+}
+
+func buildToolHandlers(specs []toolSpec) map[string]toolHandler {
+	handlers := make(map[string]toolHandler, len(specs))
+	for _, spec := range specs {
+		handlers[spec.Name] = spec.Handler
+	}
+	return handlers
+}
+
+func objectSchemaFromFields(fields ...toolField) map[string]any {
+	properties := make(map[string]any, len(fields))
+	required := make([]string, 0, len(fields))
+	for _, field := range fields {
+		prop := map[string]any{
+			"type": field.Type,
+		}
+		if field.Description != "" {
+			prop["description"] = field.Description
+		}
+		properties[field.Name] = prop
+		if field.Required {
+			required = append(required, field.Name)
+		}
+	}
+
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           properties,
+	}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+	return schema
+}
+
 func parseCommand(arguments string) (string, error) {
 	var args struct {
 		Command string `json:"command"`
@@ -169,6 +253,105 @@ func parseCommand(arguments string) (string, error) {
 		return "", fmt.Errorf("empty command")
 	}
 	return args.Command, nil
+}
+
+func parseReadFileArgs(arguments string) (string, int, error) {
+	var args struct {
+		Path  string `json:"path"`
+		Limit int    `json:"limit"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return "", 0, err
+	}
+	args.Path = strings.TrimSpace(args.Path)
+	if args.Path == "" {
+		return "", 0, fmt.Errorf("empty path")
+	}
+	return args.Path, args.Limit, nil
+}
+
+func parseWriteFileArgs(arguments string) (string, string, error) {
+	var args struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return "", "", err
+	}
+	args.Path = strings.TrimSpace(args.Path)
+	if args.Path == "" {
+		return "", "", fmt.Errorf("empty path")
+	}
+	return args.Path, args.Content, nil
+}
+
+func bashHandler(arguments string) string {
+	cmd, err := parseCommand(arguments)
+	if err != nil {
+		return "invalid args: " + err.Error()
+	}
+	fmt.Printf("Tool use: bash %s\n", cmd)
+	return runBash(cmd)
+}
+
+func readFileHandler(arguments string) string {
+	path, limit, err := parseReadFileArgs(arguments)
+	if err != nil {
+		return "invalid args: " + err.Error()
+	}
+	safe, err := safeWorkspacePath(path)
+	if err != nil {
+		return "invalid path: " + err.Error()
+	}
+	data, err := os.ReadFile(safe)
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	if limit <= 0 {
+		limit = 10000
+	}
+	if limit > 50000 {
+		limit = 50000
+	}
+	if len(data) > limit {
+		return string(data[:limit]) + fmt.Sprintf("\n\n(truncated: %d/%d bytes)", limit, len(data))
+	}
+	return string(data)
+}
+
+func writeFileHandler(arguments string) string {
+	path, content, err := parseWriteFileArgs(arguments)
+	if err != nil {
+		return "invalid args: " + err.Error()
+	}
+	safe, err := safeWorkspacePath(path)
+	if err != nil {
+		return "invalid path: " + err.Error()
+	}
+	dir := filepath.Dir(safe)
+	if dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "error: " + err.Error()
+		}
+	}
+	if err := os.WriteFile(safe, []byte(content), 0o644); err != nil {
+		return "error: " + err.Error()
+	}
+	return fmt.Sprintf("ok: wrote %d bytes to %s", len(content), path)
+}
+
+func safeWorkspacePath(path string) (string, error) {
+	if filepath.IsAbs(path) {
+		return "", fmt.Errorf("absolute path is not allowed")
+	}
+	clean := filepath.Clean(path)
+	if clean == "." || clean == "" {
+		return "", fmt.Errorf("invalid path")
+	}
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path escapes workspace")
+	}
+	return clean, nil
 }
 
 func runBash(command string) string {
