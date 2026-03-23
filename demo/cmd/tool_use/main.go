@@ -15,7 +15,8 @@ import (
 )
 
 var (
-	developerMessage = "You are a coding agent. Use tools `bash`, `read_file`, and `write_file` when needed. When task is complete, reply directly."
+	// 运行时的核心约束：要求模型通过 todo_set 维护任务状态。
+	developerMessage = "You are a coding agent. Use tools `bash`, `read_file`, `write_file`, and `todo_set` when needed. Keep TODO updated with `todo_set`. When task is complete, reply directly."
 )
 
 func main() {
@@ -26,7 +27,8 @@ func main() {
 
 	client := common.NewClient(cfg)
 
-	specs := defaultToolSpecs()
+	todo := newTodoStateStore()
+	specs := defaultToolSpecs(todo)
 	tools := buildTools(specs)
 	handlers := buildToolHandlers(specs)
 
@@ -56,12 +58,13 @@ func main() {
 			messages = []responses.ResponseInputItemUnionParam{
 				responses.ResponseInputItemParamOfMessage(developerMessage, responses.EasyInputMessageRoleDeveloper),
 			}
+			todo.Reset()
 			fmt.Println("context reset")
 			continue
 		}
 
 		messages = append(messages, responses.ResponseInputItemParamOfMessage(text, responses.EasyInputMessageRoleUser))
-		answer, err := runToolLoop(client, cfg.Model, tools, handlers, messages)
+		answer, err := runToolLoop(client, cfg.Model, tools, handlers, todo, messages)
 		if err != nil {
 			fmt.Printf("error: %v\n", err)
 			continue
@@ -83,16 +86,23 @@ func runToolLoop(
 	model string,
 	tools []responses.ToolUnionParam,
 	handlers map[string]toolHandler,
+	todo *todoStateStore,
 	messages []responses.ResponseInputItemUnionParam,
 ) (string, error) {
+	// inputItems 保存“真实会话历史”（用户输入、assistant 输出、tool 调用与结果）。
 	inputItems := append([]responses.ResponseInputItemUnionParam{}, messages...)
 
 	for step := 0; step < 20; step++ {
+		// 每轮额外注入一次最新 TODO 摘要，让模型始终看到当前任务状态。
+		// 这里不把 TODO 永久写入历史，避免上下文持续膨胀。
+		requestInput := append([]responses.ResponseInputItemUnionParam{}, inputItems...)
+		requestInput = append(requestInput, responses.ResponseInputItemParamOfMessage(todo.ContextMessage(), responses.EasyInputMessageRoleDeveloper))
+
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		params := responses.ResponseNewParams{
 			Model: openai.ResponsesModel(model),
 			Input: responses.ResponseNewParamsInputUnion{
-				OfInputItemList: inputItems,
+				OfInputItemList: requestInput,
 			},
 			Tools: tools,
 		}
