@@ -1,6 +1,7 @@
 package common
 
 import (
+	"log"
 	"os"
 	"strings"
 
@@ -10,26 +11,32 @@ import (
 )
 
 type Config struct {
-	BaseURL string
-	APIKey  string
-	Model   string
+	BaseURL   string
+	APIKey    string
+	Model     string
+	DebugHTTP bool
 }
 
 func LoadConfig() Config {
 	_ = godotenv.Overload(".env", "../.env", "../../.env")
 
 	return Config{
-		BaseURL: normalizeBaseURL(getenv("OPENAI_BASE_URL", "http://localhost:11434/v1")),
-		APIKey:  normalizeAPIKey(getenv("OPENAI_API_KEY", "")),
-		Model:   getenv("OPENAI_MODEL", "gpt-4o"),
+		BaseURL:   normalizeBaseURL(getenv("OPENAI_BASE_URL", "http://localhost:11434/v1")),
+		APIKey:    normalizeAPIKey(getenv("OPENAI_API_KEY", "")),
+		Model:     getenv("OPENAI_MODEL", "gpt-4o"),
+		DebugHTTP: getenvBool("DEBUG_HTTP", false),
 	}
 }
 
 func NewClient(cfg Config) openai.Client {
-	return openai.NewClient(
+	opts := []option.RequestOption{
 		option.WithBaseURL(cfg.BaseURL),
 		option.WithAPIKey(cfg.APIKey),
-	)
+	}
+	if cfg.DebugHTTP {
+		opts = append(opts, option.WithDebugLog(log.New(os.Stderr, "[openai] ", log.LstdFlags|log.Lmicroseconds)))
+	}
+	return openai.NewClient(opts...)
 }
 
 func getenv(key, fallback string) string {
@@ -38,6 +45,21 @@ func getenv(key, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func getenvBool(key string, fallback bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if v == "" {
+		return fallback
+	}
+	switch v {
+	case "1", "true", "t", "yes", "y", "on":
+		return true
+	case "0", "false", "f", "no", "n", "off":
+		return false
+	default:
+		return fallback
+	}
 }
 
 func normalizeAPIKey(v string) string {

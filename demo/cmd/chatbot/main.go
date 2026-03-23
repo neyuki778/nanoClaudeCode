@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -26,7 +27,7 @@ func main() {
 
 	client := common.NewClient(cfg)
 
-	fmt.Printf("Chatbot started. base_url=%s model=%s\n", cfg.BaseURL, cfg.Model)
+	fmt.Printf("Chatbot started. base_url=%s model=%s debug_http=%t\n", cfg.BaseURL, cfg.Model, cfg.DebugHTTP)
 	fmt.Println("Type your message. Commands: /reset, /exit")
 
 	scanner := bufio.NewScanner(os.Stdin)

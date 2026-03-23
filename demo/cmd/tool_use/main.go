@@ -45,7 +45,7 @@ func main() {
 		openai.DeveloperMessage("You are a coding agent. Use tool `bash` when execution is needed. When task is complete, reply directly."),
 	}
 
-	fmt.Printf("Tool-use agent started. base_url=%s model=%s\n", cfg.BaseURL, cfg.Model)
+	fmt.Printf("Tool-use agent started. base_url=%s model=%s debug_http=%t\n", cfg.BaseURL, cfg.Model, cfg.DebugHTTP)
 	fmt.Println("Type your message. Commands: /reset, /exit")
 
 	scanner := bufio.NewScanner(os.Stdin)

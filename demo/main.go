@@ -12,7 +12,7 @@ import (
 
 func main() {
 	cfg := common.LoadConfig()
-	fmt.Printf("Using OPENAI_BASE_URL=%s, OPENAI_MODEL=%s\n", cfg.BaseURL, cfg.Model)
+	fmt.Printf("Using OPENAI_BASE_URL=%s, OPENAI_MODEL=%s, DEBUG_HTTP=%t\n", cfg.BaseURL, cfg.Model, cfg.DebugHTTP)
 	client := common.NewClient(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
