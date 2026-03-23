@@ -13,7 +13,12 @@ import (
 	"nanocc/demo/internal/common"
 
 	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/shared"
+	"github.com/openai/openai-go/v3/responses"
+)
+
+var (
+	developerMessage = "You are a coding agent. Use tool `bash` when execution is needed. When task is complete, reply directly."
+	bashDescription  = "Execute a shell command in current workspace and return stdout/stderr."
 )
 
 func main() {
@@ -24,25 +29,29 @@ func main() {
 
 	client := common.NewClient(cfg)
 
-	tools := []openai.ChatCompletionToolUnionParam{
-		openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
-			Name:        "bash",
-			Description: openai.String("Execute a shell command in current workspace and return stdout/stderr."),
-			Parameters: shared.FunctionParameters{
-				"type": "object",
-				"properties": map[string]any{
-					"command": map[string]any{
-						"type":        "string",
-						"description": "Shell command to run",
+	// 初始化可用的 tools
+	tools := []responses.ToolUnionParam{
+		{
+			OfFunction: &responses.FunctionToolParam{
+				Name:        "bash",
+				Description: openai.String(bashDescription),
+				Parameters: map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"command": map[string]any{
+							"type":        "string",
+							"description": "Shell command to run",
+						},
 					},
+					"required": []string{"command"},
 				},
-				"required": []string{"command"},
 			},
-		}),
+		},
 	}
 
-	messages := []openai.ChatCompletionMessageParamUnion{
-		openai.DeveloperMessage("You are a coding agent. Use tool `bash` when execution is needed. When task is complete, reply directly."),
+	messages := []responses.ResponseInputItemUnionParam{
+		responses.ResponseInputItemParamOfMessage(developerMessage, responses.EasyInputMessageRoleDeveloper),
 	}
 
 	fmt.Printf("Tool-use agent started. base_url=%s model=%s debug_http=%t\n", cfg.BaseURL, cfg.Model, cfg.DebugHTTP)
@@ -64,14 +73,14 @@ func main() {
 			return
 		}
 		if text == "/reset" {
-			messages = []openai.ChatCompletionMessageParamUnion{
-				openai.DeveloperMessage("You are a coding agent. Use tool `bash` when execution is needed. When task is complete, reply directly."),
+			messages = []responses.ResponseInputItemUnionParam{
+				responses.ResponseInputItemParamOfMessage(developerMessage, responses.EasyInputMessageRoleDeveloper),
 			}
 			fmt.Println("context reset")
 			continue
 		}
 
-		messages = append(messages, openai.UserMessage(text))
+		messages = append(messages, responses.ResponseInputItemParamOfMessage(text, responses.EasyInputMessageRoleUser))
 		answer, err := runToolLoop(client, cfg.Model, tools, messages)
 		if err != nil {
 			fmt.Printf("error: %v\n", err)
@@ -79,8 +88,8 @@ func main() {
 		}
 
 		// Persist assistant final text into history.
-		messages = append(messages, openai.AssistantMessage(answer))
-		fmt.Print(">> ")
+		messages = append(messages, responses.ResponseInputItemParamOfMessage(answer, responses.EasyInputMessageRoleAssistant))
+		fmt.Print(">>> ")
 		fmt.Println(answer)
 	}
 
@@ -92,49 +101,57 @@ func main() {
 func runToolLoop(
 	client openai.Client,
 	model string,
-	tools []openai.ChatCompletionToolUnionParam,
-	messages []openai.ChatCompletionMessageParamUnion,
+	tools []responses.ToolUnionParam,
+	messages []responses.ResponseInputItemUnionParam,
 ) (string, error) {
-	local := append([]openai.ChatCompletionMessageParamUnion{}, messages...)
+	inputItems := append([]responses.ResponseInputItemUnionParam{}, messages...)
 
 	for step := 0; step < 20; step++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		resp, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-			Model:    openai.ChatModel(model),
-			Messages: local,
-			Tools:    tools,
-		})
+		params := responses.ResponseNewParams{
+			Model: openai.ResponsesModel(model),
+			Input: responses.ResponseNewParamsInputUnion{
+				OfInputItemList: inputItems,
+			},
+			Tools: tools,
+		}
+		resp, err := client.Responses.New(ctx, params)
 		cancel()
 		if err != nil {
 			return "", err
 		}
-		if len(resp.Choices) == 0 {
-			return "", fmt.Errorf("no choices returned")
-		}
 
-		msg := resp.Choices[0].Message
-		local = append(local, msg.ToParam())
+		followUpItems := make([]responses.ResponseInputItemUnionParam, 0, len(resp.Output)*2)
+		for _, item := range resp.Output {
+			if item.Type != "function_call" {
+				continue
+			}
+			// 显式回放 function_call，便于不支持 previous_response_id tool state 的服务端匹配 call_id
+			followUpItems = append(followUpItems, responses.ResponseInputItemParamOfFunctionCall(item.Arguments, item.CallID, item.Name))
 
-		if len(msg.ToolCalls) == 0 {
-			return strings.TrimSpace(msg.Content), nil
-		}
-
-		for _, call := range msg.ToolCalls {
-			fc := call.Function
-			if call.Type != "function" || fc.Name != "bash" {
-				local = append(local, openai.ToolMessage("unsupported tool", call.ID))
+			if item.Name != "bash" {
+				followUpItems = append(followUpItems, responses.ResponseInputItemParamOfFunctionCallOutput(item.CallID, "unsupported tool"))
 				continue
 			}
 
-			cmd, err := parseCommand(fc.Arguments)
+			cmd, err := parseCommand(item.Arguments)
+			fmt.Printf("Tool use: %s\n", cmd)
 			if err != nil {
-				local = append(local, openai.ToolMessage("invalid args: "+err.Error(), call.ID))
+				followUpItems = append(followUpItems, responses.ResponseInputItemParamOfFunctionCallOutput(item.CallID, "invalid args: "+err.Error()))
 				continue
 			}
 
+			// run bash 的结果
 			out := runBash(cmd)
-			local = append(local, openai.ToolMessage(out, call.ID))
+			fmt.Printf("Tool use output: %s\n", out)
+			followUpItems = append(followUpItems, responses.ResponseInputItemParamOfFunctionCallOutput(item.CallID, out))
 		}
+
+		if len(followUpItems) == 0 {
+			return strings.TrimSpace(resp.OutputText()), nil
+		}
+
+		inputItems = append(inputItems, followUpItems...)
 	}
 
 	return "", fmt.Errorf("tool loop exceeded max steps")
