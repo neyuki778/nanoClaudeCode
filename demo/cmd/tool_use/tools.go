@@ -15,6 +15,12 @@ import (
 	"github.com/openai/openai-go/v3/responses"
 )
 
+const (
+	todoPhaseEmpty     = "empty"
+	todoPhaseActive    = "active"
+	todoPhaseCompleted = "completed"
+)
+
 type toolHandler func(arguments string) string
 
 type toolSpec struct {
@@ -37,16 +43,24 @@ type todoTask struct {
 	Done bool   `json:"done"`
 }
 
+type todoSnapshot struct {
+	tasks       []todoTask
+	lastID      string
+	lastVersion int
+}
+
 type todoStateStore struct {
 	// 进程内 TODO 状态。
-	mu        sync.RWMutex
-	tasks     []todoTask
-	currentID string
-	version   int
+	mu            sync.RWMutex
+	tasks         []todoTask
+	currentID     string
+	version       int
+	phase         string
+	lastCompleted *todoSnapshot
 }
 
 func newTodoStateStore() *todoStateStore {
-	return &todoStateStore{}
+	return &todoStateStore{phase: todoPhaseEmpty}
 }
 
 func (s *todoStateStore) Reset() {
@@ -55,6 +69,7 @@ func (s *todoStateStore) Reset() {
 	s.tasks = nil
 	s.currentID = ""
 	s.version = 0
+	s.phase = todoPhaseEmpty
 }
 
 func (s *todoStateStore) Set(tasks []todoTask, currentID string) (int, error) {
@@ -77,26 +92,44 @@ func (s *todoStateStore) Set(tasks []todoTask, currentID string) (int, error) {
 	s.tasks = copied
 	s.currentID = strings.TrimSpace(currentID)
 	s.version++
+	if isTodoCompletedState(s.tasks, s.currentID) {
+		s.phase = todoPhaseCompleted
+		completedTasks := make([]todoTask, len(s.tasks))
+		copy(completedTasks, s.tasks)
+		s.lastCompleted = &todoSnapshot{
+			tasks:       completedTasks,
+			lastID:      s.currentID,
+			lastVersion: s.version,
+		}
+	} else {
+		s.phase = todoPhaseActive
+	}
 	return s.version, nil
 }
 
-func (s *todoStateStore) snapshot() ([]todoTask, string, int) {
+func (s *todoStateStore) snapshot() ([]todoTask, string, int, string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	tasks := make([]todoTask, 0, len(s.tasks))
 	tasks = append(tasks, s.tasks...)
-	return tasks, s.currentID, s.version
+	return tasks, s.currentID, s.version, s.phase
 }
 
 func (s *todoStateStore) ContextMessage() string {
 	// 注入给模型的最新 TODO 摘要（每轮请求都会附带）。
-	tasks, currentID, version := s.snapshot()
-	if len(tasks) == 0 {
+	tasks, currentID, version, phase := s.snapshot()
+	if len(tasks) == 0 || phase == todoPhaseCompleted {
 		return "Current TODO status: (empty). Use `todo_set` to initialize and maintain task progress."
 	}
 
 	var b strings.Builder
+	// if phase == todoPhaseCompleted {
+	// 	fmt.Fprintf(&b, "Current TODO status: (empty). Last TODO status: ")
+	// 	for _, task := range tasks {
+	// 		fmt.Fprintf(&b, )
+	// 	}
+	// }
 	fmt.Fprintf(&b, "Current TODO status (v%d):\n", version)
 	for _, task := range tasks {
 		state := " "
@@ -116,7 +149,7 @@ func (s *todoStateStore) ContextMessage() string {
 
 func (s *todoStateStore) RenderForUser() string {
 	// 展示给终端用户的可读格式。
-	tasks, currentID, version := s.snapshot()
+	tasks, currentID, version, _ := s.snapshot()
 	if len(tasks) == 0 {
 		return "TODO v0: (empty)"
 	}
@@ -136,6 +169,18 @@ func (s *todoStateStore) RenderForUser() string {
 		fmt.Fprintf(&b, "Current: %s", currentID)
 	}
 	return b.String()
+}
+
+func isTodoCompletedState(tasks []todoTask, currentID string) bool {
+	if len(tasks) == 0 || strings.TrimSpace(currentID) != "" {
+		return false
+	}
+	for _, task := range tasks {
+		if !task.Done {
+			return false
+		}
+	}
+	return true
 }
 
 func validateTodo(tasks []todoTask, currentID string) error {
