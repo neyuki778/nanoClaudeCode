@@ -44,7 +44,7 @@ func main() {
 			responses.ResponseInputItemParamOfMessage("Sub-agent task summary:\n"+strings.TrimSpace(taskSummary), responses.EasyInputMessageRoleUser),
 		}
 
-		answer, err := runToolLoop(client, cfg.Model, childTools, childHandlers, childTodo, childMessages)
+		answer, err := runToolLoop(client, cfg.SubAgentModel, childTools, childHandlers, childTodo, childMessages, nil)
 		if err != nil {
 			return "", err
 		}
@@ -62,7 +62,7 @@ func main() {
 		responses.ResponseInputItemParamOfMessage(developerMessage, responses.EasyInputMessageRoleDeveloper),
 	}
 
-	fmt.Printf("Tool-use agent started. base_url=%s model=%s debug_http=%t\n", cfg.BaseURL, cfg.Model, cfg.DebugHTTP)
+	fmt.Printf("Tool-use agent started. base_url=%s model=%s subagent_model=%s debug_http=%t\n", cfg.BaseURL, cfg.Model, cfg.SubAgentModel, cfg.DebugHTTP)
 	fmt.Println("Type your message. Commands: /reset, /exit")
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -84,15 +84,20 @@ func main() {
 			messages = []responses.ResponseInputItemUnionParam{
 				responses.ResponseInputItemParamOfMessage(developerMessage, responses.EasyInputMessageRoleDeveloper),
 			}
+			canceled := subAgentMgr.CancelAll()
 			todo.Reset()
-			fmt.Println("context reset")
+			if canceled > 0 {
+				fmt.Printf("context reset (canceled %d sub-agent job(s))\n", canceled)
+			} else {
+				fmt.Println("context reset")
+			}
 			continue
 		}
 
 		// 每个用户输入视为一个新任务，清理上一轮 TODO，避免跨轮状态干扰。
 		todo.Reset()
 		messages = append(messages, responses.ResponseInputItemParamOfMessage(text, responses.EasyInputMessageRoleUser))
-		answer, err := runToolLoop(client, cfg.Model, tools, handlers, todo, messages)
+		answer, err := runToolLoop(client, cfg.Model, tools, handlers, todo, messages, subAgentMgr)
 		if err != nil {
 			fmt.Printf("error: %v\n", err)
 			continue
@@ -116,6 +121,7 @@ func runToolLoop(
 	handlers map[string]toolHandler,
 	todo *todoStateStore,
 	messages []responses.ResponseInputItemUnionParam,
+	subAgentMgr *subAgentManager,
 ) (string, error) {
 	// inputItems 保存“真实会话历史”（用户输入、assistant 输出、tool 调用与结果）。
 	inputItems := append([]responses.ResponseInputItemUnionParam{}, messages...)
@@ -160,6 +166,14 @@ func runToolLoop(
 		}
 
 		if len(followUpItems) == 0 {
+			if subAgentMgr != nil {
+				pending := subAgentMgr.PendingCount()
+				if pending > 0 {
+					guard := fmt.Sprintf("There are still %d pending sub-agent job(s). Call `subagent_wait` before replying to the user.", pending)
+					inputItems = append(inputItems, responses.ResponseInputItemParamOfMessage(guard, responses.EasyInputMessageRoleDeveloper))
+					continue
+				}
+			}
 			return strings.TrimSpace(resp.OutputText()), nil
 		}
 

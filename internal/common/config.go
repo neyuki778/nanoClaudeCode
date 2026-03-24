@@ -11,20 +11,23 @@ import (
 )
 
 type Config struct {
-	BaseURL   string
-	APIKey    string
-	Model     string
-	DebugHTTP bool
+	BaseURL       string
+	APIKey        string
+	Model         string
+	SubAgentModel string
+	DebugHTTP     bool
 }
 
 func LoadConfig() Config {
 	_ = godotenv.Overload(".env", "../.env", "../../.env")
+	model := getenv("OPENAI_MODEL", "gpt-4o")
 
 	return Config{
-		BaseURL:   normalizeBaseURL(getenv("OPENAI_BASE_URL", "http://localhost:11434/v1")),
-		APIKey:    normalizeAPIKey(getenv("OPENAI_API_KEY", "")),
-		Model:     getenv("OPENAI_MODEL", "gpt-4o"),
-		DebugHTTP: getenvBool("DEBUG_HTTP", false),
+		BaseURL:       normalizeBaseURL(getenv("OPENAI_BASE_URL", "http://localhost:11434/v1")),
+		APIKey:        normalizeAPIKey(getenv("OPENAI_API_KEY", "")),
+		Model:         model,
+		SubAgentModel: getenv("SUBAGENT_MODEL", model),
+		DebugHTTP:     getenvBool("DEBUG_HTTP", false),
 	}
 }
 
