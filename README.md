@@ -42,22 +42,19 @@ User → messages[] → LLM → response
 核心特性：
 - **4 个工具**：`bash`、`read_file`、`write_file`、`todo_set`
 - **TODO 状态管理**：三阶段状态机（`empty` → `active` → `completed`），完整校验
-- **上下文注入**：每轮请求自动将 TODO 状态注入 system 消息
+- **上下文注入**：每轮请求自动将 TODO 状态注入 developer 消息
 - **工具调度**：dispatch map（`toolName → handler`），循环结构不动，新工具注册即用
 - **安全机制**：路径遍历防护、危险命令黑名单、文件大小限制、命令超时（30s）
 
-```
-demo/
-├── main.go                    # 简单 API 调用示例
-├── go.mod / go.sum
-├── cmd/
-│   ├── chatbot/main.go        # 无工具对话 agent（12 轮上下文窗口）
-│   └── tool_use/
-│       ├── main.go            # 工具调用 agent 主循环（最多 20 步）
-│       └── tools.go           # 工具实现 + TODO 状态机 + Schema 生成
-└── internal/common/
-    └── config.go              # 配置加载（BaseURL / APIKey / Model）
-```
+### `agents/subagent` — 父子代理 + Skills（MVP）
+
+核心特性：
+- **子代理工具**：`subagent_spawn`、`subagent_wait`（并发上限 4，失败重试上限 2）
+- **父代理约束**：存在 pending 子代理时，父代理不能直接结束，必须先 `subagent_wait`
+- **会话控制**：`/reset` 会清理上下文并取消未完成子代理
+- **Skills（按需激活）**：`skill_list`、`skill_load`、`skill_unload`
+- **技能来源**：运行目录 `.skills/`（支持 front matter：`name`、`description`）
+- **模型配置**：子代理模型读取 `SUBAGENT_MODEL`（为空回退 `OPENAI_MODEL`）
 
 ### `demo/cmd/chatbot` — 基础对话 Agent
 
@@ -75,8 +72,8 @@ demo/
 | s01 | Agent 循环 | *One loop & Bash is all you need* | ✅ 已实现 |
 | s02 | Tool Use | *加一个工具，只加一个 handler* | ✅ 已实现 |
 | s03 | TodoWrite | *没有计划的 agent 走哪算哪* | ✅ 已实现 |
-| s04 | 子智能体 | *大任务拆小，每个小任务干净的上下文* | 📋 待实现 |
-| s05 | Skills | *用到什么知识，临时加载什么知识* | 📋 待实现 |
+| s04 | 子智能体 | *大任务拆小，每个小任务干净的上下文* | 🚧 MVP 已实现 |
+| s05 | Skills | *用到什么知识，临时加载什么知识* | 🚧 MVP 已实现 |
 | s06 | Context Compact | *上下文总会满，要有办法腾地方* | 📋 待实现 |
 | s07 | 任务系统 | *大目标要拆成小任务，排好序，记在磁盘上* | 📋 待实现 |
 | s08 | 后台任务 | *慢操作丢后台，agent 继续想下一步* | 📋 待实现 |
@@ -91,24 +88,20 @@ demo/
 
 ### 环境配置
 
-```sh
-cp demo/.env.example demo/.env  # 编辑填入 API Key
-```
-
-`.env` 变量：
+在项目根目录创建 `.env`（或在 `demo/.env` 中配置）：
 
 ```env
 OPENAI_BASE_URL=https://api.anthropic.com/v1   # 或自定义 endpoint
 OPENAI_API_KEY=your-api-key
 OPENAI_MODEL=claude-sonnet-4-6
+SUBAGENT_MODEL=claude-haiku-4-5                # 可选，默认回退 OPENAI_MODEL
 DEBUG_HTTP=false
 ```
 
 ### 运行工具调用 Agent
 
 ```sh
-cd demo
-go run ./cmd/tool_use
+go run ./demo/cmd/tool_use
 ```
 
 支持命令：
@@ -118,8 +111,13 @@ go run ./cmd/tool_use
 ### 运行对话 Agent
 
 ```sh
-cd demo
-go run cmd/chatbot/main.go
+go run ./demo/cmd/chatbot
+```
+
+### 运行子代理 Agent（MVP）
+
+```sh
+go run ./agents/subagent
 ```
 
 ---
@@ -138,17 +136,17 @@ github.com/joho/godotenv         # .env 文件加载
 ```
 nanoClaudeCode/
 ├── README.md
-├── demo/                          # Go 实现
+├── go.mod / go.sum                # module: nanocc
+├── agents/
+│   ├── subagent/                  # s04/s05 MVP: 父子代理 + skills 工具
+│   └── skills/                    # skills 注册/状态与 .skills 加载
+├── demo/                          # 课程式主线实现（s01-s03）
 │   ├── cmd/
 │   │   ├── chatbot/               # s01: 基础 agent 循环（无工具）
 │   │   └── tool_use/              # s01-s03: 工具调用 + TODO 管理
-│   └── internal/common/           # 配置工具
+├── internal/common/               # 共享配置与 OpenAI client
 ├── docs/
 │   └── response-api.md            # Responses API 参考文档
 └── ref/
     └── learn-claude-code-main/    # Python 参考实现（s01-s12）
 ```
-
----
-
-**模型就是 Agent。代码是 Harness。造好 Harness，Agent 会完成剩下的。**

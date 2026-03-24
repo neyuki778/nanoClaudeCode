@@ -1,19 +1,22 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `demo/` is the main Go workspace.
+- `go.mod` at repository root defines module `nanocc`.
 - `demo/cmd/chatbot/` contains the basic multi-turn chatbot loop.
 - `demo/cmd/tool_use/` contains the tool-calling agent loop and tool handlers.
-- `demo/internal/common/` contains shared config/client setup.
+- `agents/subagent/` contains the parent/sub-agent runtime with skill-aware tool-use loop.
+- `agents/skills/` contains shared skill registry/state loading from runtime `.skills/`.
+- `internal/common/` contains shared config/client setup.
 - `docs/` stores project docs (for example `docs/response-api.md`).
 - `ref/` contains reference implementations and learning materials; do not treat as production code.
 - `.agents/skills/` contains local skill assets and scripts used by agent workflows.
 
 ## Build, Test, and Development Commands
-- `cd demo && go run ./cmd/tool_use` — run the tool-use agent locally.
-- `cd demo && go run ./cmd/chatbot` — run the basic chatbot loop.
-- `cd demo && go test ./...` — run all Go tests/packages (currently compiles packages; some may have no test files).
-- `cd demo && go build ./...` — verify everything builds cleanly.
+- `go run ./demo/cmd/tool_use` — run the basic tool-use agent.
+- `go run ./demo/cmd/chatbot` — run the basic chatbot loop.
+- `go run ./agents/subagent` — run parent/sub-agent loop with skills + subagent tools.
+- `go test ./...` — run all Go tests/packages (currently some packages have no test files).
+- `go build ./...` — verify everything builds cleanly.
 
 ## Coding Style & Naming Conventions
 - Language: Go. Follow idiomatic Go and `gofmt` formatting.
@@ -38,6 +41,7 @@
   - linked issue/task if applicable.
 
 ## Security & Configuration Tips
-- Configure runtime via `demo/.env` (`OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `DEBUG_HTTP`).
+- Configure runtime via `.env`/`demo/.env` (`OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `SUBAGENT_MODEL`, `DEBUG_HTTP`).
+- Skills are discovered from runtime working directory `.skills/`.
 - Never commit real API keys or secrets.
 - Preserve existing safety checks (path traversal guard, dangerous command blocking, command timeout) when modifying tool execution.
