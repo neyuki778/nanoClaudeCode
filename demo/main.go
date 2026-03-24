@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"nanocc/demo/internal/common"
+	"nanocc/internal/common"
 
 	"github.com/openai/openai-go/v3"
 )

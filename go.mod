@@ -1,4 +1,4 @@
-module nanocc/demo
+module nanocc
 
 go 1.22
 

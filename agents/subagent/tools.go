@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"nanocc/demo/agents/skills"
+	"nanocc/agents/skills"
 	"os"
 	"os/exec"
 	"path/filepath"
