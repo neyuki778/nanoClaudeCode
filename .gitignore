@@ -1,6 +1,7 @@
 # --- Project specific ---
 # Ignore reference materials directory
 ref/
+.skills/
 
 # --- OS ---
 .DS_Store

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"nanocc/demo/agents/skills"
 	"os"
 	"strings"
 	"time"
@@ -16,7 +17,7 @@ import (
 
 var (
 	// 运行时的核心约束：要求模型通过 todo_set 维护任务状态。
-	developerMessage = "You are a coding agent. Use tools `bash`, `read_file`, `write_file`, and `todo_set` when needed. Use `todo_set` only for non-trivial multi-step tasks (for example: code changes, file edits, debugging, or tasks requiring multiple actions). For simple single-turn Q&A, reply directly without creating TODO. If a TODO is started, keep it updated and reply directly once completed."
+	developerMessage = "You are a coding agent. Use tools `bash`, `read_file`, `write_file`, and `todo_set` when needed. You can manage skills with `skill_list`, `skill_load`, and `skill_unload`. Use `todo_set` only for non-trivial multi-step tasks (for example: code changes, file edits, debugging, or tasks requiring multiple actions). For simple single-turn Q&A, reply directly without creating TODO. If a TODO is started, keep it updated and reply directly once completed."
 )
 
 func main() {
@@ -26,6 +27,12 @@ func main() {
 	}
 
 	client := common.NewClient(cfg)
+	skillRegistry, err := skills.LoadRegistryFromDir(".skills")
+	if err != nil {
+		fmt.Printf("warning: failed to load .skills: %v\n", err)
+		skillRegistry = skills.NewRegistry()
+	}
+	parentSkills := skills.NewState()
 
 	todo := newTodoStateStore()
 	subAgentMgr := newSubAgentManager(4)
@@ -35,6 +42,8 @@ func main() {
 		}
 
 		childTodo := newTodoStateStore()
+		childSkills := skills.NewState()
+		childSkills.SetActive(parentSkills.ActiveNames())
 		childSpecs := childToolSpecs(childTodo)
 		childTools := buildTools(childSpecs)
 		childHandlers := buildToolHandlers(childSpecs)
@@ -44,7 +53,7 @@ func main() {
 			responses.ResponseInputItemParamOfMessage("Sub-agent task summary:\n"+strings.TrimSpace(taskSummary), responses.EasyInputMessageRoleUser),
 		}
 
-		answer, err := runToolLoop(client, cfg.SubAgentModel, childTools, childHandlers, childTodo, childMessages, nil)
+		answer, err := runToolLoop(client, cfg.SubAgentModel, childTools, childHandlers, childTodo, childMessages, nil, childSkills, skillRegistry)
 		if err != nil {
 			return "", err
 		}
@@ -54,7 +63,7 @@ func main() {
 		return answer, nil
 	}
 
-	specs := parentToolSpecs(todo, subAgentMgr, subAgentRunner)
+	specs := parentToolSpecs(todo, subAgentMgr, subAgentRunner, parentSkills, skillRegistry)
 	tools := buildTools(specs)
 	handlers := buildToolHandlers(specs)
 
@@ -62,7 +71,7 @@ func main() {
 		responses.ResponseInputItemParamOfMessage(developerMessage, responses.EasyInputMessageRoleDeveloper),
 	}
 
-	fmt.Printf("Tool-use agent started. base_url=%s model=%s subagent_model=%s debug_http=%t\n", cfg.BaseURL, cfg.Model, cfg.SubAgentModel, cfg.DebugHTTP)
+	fmt.Printf("Tool-use agent started. base_url=%s model=%s subagent_model=%s skills=%d debug_http=%t\n", cfg.BaseURL, cfg.Model, cfg.SubAgentModel, skillRegistry.Count(), cfg.DebugHTTP)
 	fmt.Println("Type your message. Commands: /reset, /exit")
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -86,6 +95,7 @@ func main() {
 			}
 			canceled := subAgentMgr.CancelAll()
 			todo.Reset()
+			parentSkills.Reset()
 			if canceled > 0 {
 				fmt.Printf("context reset (canceled %d sub-agent job(s))\n", canceled)
 			} else {
@@ -97,7 +107,7 @@ func main() {
 		// 每个用户输入视为一个新任务，清理上一轮 TODO，避免跨轮状态干扰。
 		todo.Reset()
 		messages = append(messages, responses.ResponseInputItemParamOfMessage(text, responses.EasyInputMessageRoleUser))
-		answer, err := runToolLoop(client, cfg.Model, tools, handlers, todo, messages, subAgentMgr)
+		answer, err := runToolLoop(client, cfg.Model, tools, handlers, todo, messages, subAgentMgr, parentSkills, skillRegistry)
 		if err != nil {
 			fmt.Printf("error: %v\n", err)
 			continue
@@ -122,6 +132,8 @@ func runToolLoop(
 	todo *todoStateStore,
 	messages []responses.ResponseInputItemUnionParam,
 	subAgentMgr *subAgentManager,
+	skillState *skills.State,
+	skillRegistry *skills.Registry,
 ) (string, error) {
 	// inputItems 保存“真实会话历史”（用户输入、assistant 输出、tool 调用与结果）。
 	inputItems := append([]responses.ResponseInputItemUnionParam{}, messages...)
@@ -131,6 +143,12 @@ func runToolLoop(
 		// 这里不把 TODO 永久写入历史，避免上下文持续膨胀。
 		requestInput := append([]responses.ResponseInputItemUnionParam{}, inputItems...)
 		requestInput = append(requestInput, responses.ResponseInputItemParamOfMessage(todo.ContextMessage(), responses.EasyInputMessageRoleDeveloper))
+		if skillState != nil && skillRegistry != nil {
+			requestInput = append(requestInput, responses.ResponseInputItemParamOfMessage(skillRegistry.NamesContextMessage(), responses.EasyInputMessageRoleDeveloper))
+			if skillCtx := strings.TrimSpace(skillState.ContextMessage(skillRegistry)); skillCtx != "" {
+				requestInput = append(requestInput, responses.ResponseInputItemParamOfMessage(skillCtx, responses.EasyInputMessageRoleDeveloper))
+			}
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		params := responses.ResponseNewParams{

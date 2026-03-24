@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"nanocc/demo/agents/skills"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,6 +46,10 @@ type subAgentSpawnArgs struct {
 
 type subAgentWaitArgs struct {
 	AgentIDs []string `json:"agent_ids"`
+}
+
+type skillNameArgs struct {
+	Name string `json:"name"`
 }
 
 type todoTask struct {
@@ -278,9 +283,33 @@ func baseToolSpecs(todo *todoStateStore) []toolSpec {
 	}
 }
 
-func parentToolSpecs(todo *todoStateStore, manager *subAgentManager, runner subAgentRunner) []toolSpec {
+func parentToolSpecs(
+	todo *todoStateStore,
+	manager *subAgentManager,
+	runner subAgentRunner,
+	skillState *skills.State,
+	skillRegistry *skills.Registry,
+) []toolSpec {
 	specs := append([]toolSpec{}, baseToolSpecs(todo)...)
 	specs = append(specs,
+		toolSpec{
+			Name:        "skill_list",
+			Description: "List all skills discovered from .skills directory and show active flags.",
+			Parameters:  skillListSchema(),
+			Handler:     skillListHandler(skillRegistry, skillState),
+		},
+		toolSpec{
+			Name:        "skill_load",
+			Description: "Activate one skill by name for subsequent turns.",
+			Parameters:  skillNameSchema("Skill name to activate."),
+			Handler:     skillLoadHandler(skillRegistry, skillState),
+		},
+		toolSpec{
+			Name:        "skill_unload",
+			Description: "Deactivate one skill by name.",
+			Parameters:  skillNameSchema("Skill name to deactivate."),
+			Handler:     skillUnloadHandler(skillState),
+		},
 		toolSpec{
 			Name:        "subagent_spawn",
 			Description: "Create and start one sub-agent job asynchronously.",
@@ -375,6 +404,28 @@ func subAgentWaitSchema() map[string]any {
 				},
 			},
 		},
+	}
+}
+
+func skillListSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{},
+	}
+}
+
+func skillNameSchema(description string) map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"name": map[string]any{
+				"type":        "string",
+				"description": description,
+			},
+		},
+		"required": []string{"name"},
 	}
 }
 
@@ -556,6 +607,18 @@ func parseSubAgentWaitArgs(arguments string) (subAgentWaitArgs, error) {
 	return args, nil
 }
 
+func parseSkillNameArgs(arguments string) (skillNameArgs, error) {
+	var args skillNameArgs
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return skillNameArgs{}, err
+	}
+	args.Name = strings.TrimSpace(args.Name)
+	if args.Name == "" {
+		return skillNameArgs{}, fmt.Errorf("empty name")
+	}
+	return args, nil
+}
+
 func bashHandler(arguments string) string {
 	cmd, err := parseCommand(arguments)
 	if err != nil {
@@ -672,6 +735,78 @@ func subAgentWaitHandler(manager *subAgentManager) toolHandler {
 
 		jobs := manager.Wait(args.AgentIDs)
 		return formatWaitResult(jobs)
+	}
+}
+
+func skillListHandler(registry *skills.Registry, state *skills.State) toolHandler {
+	return func(arguments string) string {
+		if strings.TrimSpace(arguments) != "" && strings.TrimSpace(arguments) != "{}" {
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(arguments), &payload); err != nil {
+				return "invalid args: " + err.Error()
+			}
+		}
+		if registry == nil || registry.Count() == 0 {
+			return "skills: none found under .skills"
+		}
+
+		activeSet := make(map[string]struct{})
+		if state != nil {
+			for _, name := range state.ActiveNames() {
+				activeSet[name] = struct{}{}
+			}
+		}
+
+		defs := registry.List()
+		var b strings.Builder
+		fmt.Fprintf(&b, "skills found: %d\n", len(defs))
+		for _, def := range defs {
+			flag := "inactive"
+			if _, ok := activeSet[def.Name]; ok {
+				flag = "active"
+			}
+			fmt.Fprintf(&b, "- %s [%s]: %s\n", def.Name, flag, def.Description)
+		}
+		return strings.TrimSpace(b.String())
+	}
+}
+
+func skillLoadHandler(registry *skills.Registry, state *skills.State) toolHandler {
+	return func(arguments string) string {
+		if registry == nil || state == nil {
+			return "error: skills runtime is not configured"
+		}
+		args, err := parseSkillNameArgs(arguments)
+		if err != nil {
+			return "invalid args: " + err.Error()
+		}
+
+		def, loaded, err := state.Load(args.Name, registry)
+		if err != nil {
+			return "error: " + err.Error()
+		}
+		if !loaded {
+			return fmt.Sprintf("skill already active: %s", def.Name)
+		}
+		return fmt.Sprintf("skill loaded: %s", def.Name)
+	}
+}
+
+func skillUnloadHandler(state *skills.State) toolHandler {
+	return func(arguments string) string {
+		if state == nil {
+			return "error: skills runtime is not configured"
+		}
+		args, err := parseSkillNameArgs(arguments)
+		if err != nil {
+			return "invalid args: " + err.Error()
+		}
+
+		name := skills.NormalizeName(args.Name)
+		if !state.Unload(name) {
+			return fmt.Sprintf("skill not active: %s", name)
+		}
+		return fmt.Sprintf("skill unloaded: %s", name)
 	}
 }
 
