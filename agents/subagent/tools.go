@@ -37,6 +37,16 @@ type toolField struct {
 	Required    bool
 }
 
+type subAgentSpawnArgs struct {
+	TaskSummary string `json:"task_summary"`
+	TimeoutSec  int    `json:"timeout_sec"`
+	Retries     int    `json:"retries"`
+}
+
+type subAgentWaitArgs struct {
+	AgentIDs []string `json:"agent_ids"`
+}
+
 type todoTask struct {
 	ID   string `json:"id"`
 	Text string `json:"text"`
@@ -235,8 +245,8 @@ func validateTodo(tasks []todoTask, currentID string) error {
 	return nil
 }
 
-func defaultToolSpecs(todo *todoStateStore) []toolSpec {
-	// 工具注册中心：新增工具时在这里挂 spec。
+func baseToolSpecs(todo *todoStateStore) []toolSpec {
+	// 所有 agent 都可用的基础工具集合。
 	return []toolSpec{
 		newTool(
 			"bash",
@@ -266,6 +276,30 @@ func defaultToolSpecs(todo *todoStateStore) []toolSpec {
 			Handler:    todoSetHandler(todo),
 		},
 	}
+}
+
+func parentToolSpecs(todo *todoStateStore, manager *subAgentManager, runner subAgentRunner) []toolSpec {
+	specs := append([]toolSpec{}, baseToolSpecs(todo)...)
+	specs = append(specs,
+		toolSpec{
+			Name:        "subagent_spawn",
+			Description: "Create and start one sub-agent job asynchronously.",
+			Parameters:  subAgentSpawnSchema(),
+			Handler:     subAgentSpawnHandler(manager, runner),
+		},
+		toolSpec{
+			Name:        "subagent_wait",
+			Description: "Wait for specific sub-agent jobs (or all when omitted) and return summaries.",
+			Parameters:  subAgentWaitSchema(),
+			Handler:     subAgentWaitHandler(manager),
+		},
+	)
+	return specs
+}
+
+func childToolSpecs(todo *todoStateStore) []toolSpec {
+	// 子代理禁止使用 subagent_* 工具（不可递归创建子代理）。
+	return append([]toolSpec{}, baseToolSpecs(todo)...)
 }
 
 func todoSetSchema() map[string]any {
@@ -303,6 +337,44 @@ func todoSetSchema() map[string]any {
 			},
 		},
 		"required": []string{"tasks", "current_id"},
+	}
+}
+
+func subAgentSpawnSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"task_summary": map[string]any{
+				"type":        "string",
+				"description": "Task summary for the sub-agent to execute.",
+			},
+			"timeout_sec": map[string]any{
+				"type":        "integer",
+				"description": "Per-attempt timeout in seconds.",
+			},
+			"retries": map[string]any{
+				"type":        "integer",
+				"description": "Retry count after failure. Max 2.",
+			},
+		},
+		"required": []string{"task_summary", "timeout_sec"},
+	}
+}
+
+func subAgentWaitSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"agent_ids": map[string]any{
+				"type":        "array",
+				"description": "Target sub-agent IDs. Empty means wait all.",
+				"items": map[string]any{
+					"type": "string",
+				},
+			},
+		},
 	}
 }
 
@@ -437,6 +509,53 @@ func parseTodoSetArgs(arguments string) ([]todoTask, string, error) {
 	return normalized, currentID, nil
 }
 
+func parseSubAgentSpawnArgs(arguments string) (subAgentSpawnArgs, error) {
+	var args subAgentSpawnArgs
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return subAgentSpawnArgs{}, err
+	}
+	args.TaskSummary = strings.TrimSpace(args.TaskSummary)
+	if args.TaskSummary == "" {
+		return subAgentSpawnArgs{}, fmt.Errorf("empty task_summary")
+	}
+	if args.TimeoutSec <= 0 {
+		return subAgentSpawnArgs{}, fmt.Errorf("timeout_sec must be positive")
+	}
+	if args.TimeoutSec > 3600 {
+		return subAgentSpawnArgs{}, fmt.Errorf("timeout_sec too large: max 3600")
+	}
+	if args.Retries < 0 {
+		return subAgentSpawnArgs{}, fmt.Errorf("retries must be >= 0")
+	}
+	return args, nil
+}
+
+func parseSubAgentWaitArgs(arguments string) (subAgentWaitArgs, error) {
+	if strings.TrimSpace(arguments) == "" {
+		return subAgentWaitArgs{}, nil
+	}
+
+	var args subAgentWaitArgs
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return subAgentWaitArgs{}, err
+	}
+	normalized := make([]string, 0, len(args.AgentIDs))
+	seen := make(map[string]struct{}, len(args.AgentIDs))
+	for _, id := range args.AgentIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		normalized = append(normalized, id)
+	}
+	args.AgentIDs = normalized
+	return args, nil
+}
+
 func bashHandler(arguments string) string {
 	cmd, err := parseCommand(arguments)
 	if err != nil {
@@ -513,6 +632,67 @@ func todoSetHandler(todo *todoStateStore) toolHandler {
 		// 返回可读摘要，便于模型和用户同时确认当前 TODO 状态。
 		return fmt.Sprintf("todo updated v%d: %d total, %d done\n%s", version, len(tasks), doneCount, todo.RenderForUser())
 	}
+}
+
+func subAgentSpawnHandler(manager *subAgentManager, runner subAgentRunner) toolHandler {
+	return func(arguments string) string {
+		if manager == nil {
+			return "error: subagent manager is not configured"
+		}
+		args, err := parseSubAgentSpawnArgs(arguments)
+		if err != nil {
+			return "invalid args: " + err.Error()
+		}
+		if args.Retries == 0 {
+			args.Retries = 2
+		}
+
+		jobID, err := manager.Spawn(
+			args.TaskSummary,
+			time.Duration(args.TimeoutSec)*time.Second,
+			args.Retries,
+			runner,
+		)
+		if err != nil {
+			return "error: " + err.Error()
+		}
+		return fmt.Sprintf("subagent spawned: %s", jobID)
+	}
+}
+
+func subAgentWaitHandler(manager *subAgentManager) toolHandler {
+	return func(arguments string) string {
+		if manager == nil {
+			return "error: subagent manager is not configured"
+		}
+		args, err := parseSubAgentWaitArgs(arguments)
+		if err != nil {
+			return "invalid args: " + err.Error()
+		}
+
+		jobs := manager.Wait(args.AgentIDs)
+		return formatWaitResult(jobs)
+	}
+}
+
+func formatWaitResult(jobs []subAgentJob) string {
+	if len(jobs) == 0 {
+		return "no subagent jobs found"
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "subagent wait finished: %d job(s)\n", len(jobs))
+	for _, job := range jobs {
+		fmt.Fprintf(&b, "- %s [%s] attempt=%d", job.ID, job.Status, job.Attempt)
+		if job.Status == subAgentJobSucceeded && strings.TrimSpace(job.ResultText) != "" {
+			fmt.Fprintf(&b, "\n  result: %s", strings.TrimSpace(job.ResultText))
+		}
+		if job.Status != subAgentJobSucceeded && strings.TrimSpace(job.ErrorText) != "" {
+			fmt.Fprintf(&b, "\n  error: %s", strings.TrimSpace(job.ErrorText))
+		}
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func safeWorkspacePath(path string) (string, error) {

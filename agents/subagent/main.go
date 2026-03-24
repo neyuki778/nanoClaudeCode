@@ -28,7 +28,33 @@ func main() {
 	client := common.NewClient(cfg)
 
 	todo := newTodoStateStore()
-	specs := defaultToolSpecs(todo)
+	subAgentMgr := newSubAgentManager(4)
+	subAgentRunner := func(ctx context.Context, taskSummary string) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+
+		childTodo := newTodoStateStore()
+		childSpecs := childToolSpecs(childTodo)
+		childTools := buildTools(childSpecs)
+		childHandlers := buildToolHandlers(childSpecs)
+
+		childMessages := []responses.ResponseInputItemUnionParam{
+			responses.ResponseInputItemParamOfMessage(developerMessage, responses.EasyInputMessageRoleDeveloper),
+			responses.ResponseInputItemParamOfMessage("Sub-agent task summary:\n"+strings.TrimSpace(taskSummary), responses.EasyInputMessageRoleUser),
+		}
+
+		answer, err := runToolLoop(client, cfg.Model, childTools, childHandlers, childTodo, childMessages)
+		if err != nil {
+			return "", err
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return answer, nil
+	}
+
+	specs := parentToolSpecs(todo, subAgentMgr, subAgentRunner)
 	tools := buildTools(specs)
 	handlers := buildToolHandlers(specs)
 
