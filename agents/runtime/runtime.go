@@ -1,4 +1,4 @@
-package main
+package runtime
 
 import (
 	"bufio"
@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"nanocc/agents/compact"
 	"nanocc/agents/skills"
+	"nanocc/agents/subagent"
 	"os"
 	"strings"
 	"time"
@@ -21,10 +22,10 @@ var (
 	developerMessage = "You are a coding agent. Use tools `bash`, `read_file`, `write_file`, and `todo_set` when needed. You can manage skills with `skill_list`, `skill_load`, and `skill_unload`. Use `todo_set` only for non-trivial multi-step tasks (for example: code changes, file edits, debugging, or tasks requiring multiple actions). For simple single-turn Q&A, reply directly without creating TODO. If a TODO is started, keep it updated and reply directly once completed."
 )
 
-func main() {
+func RunInteractive() error {
 	cfg := common.LoadConfig()
 	if cfg.APIKey == "" {
-		panic("OPENAI_API_KEY is empty")
+		return fmt.Errorf("OPENAI_API_KEY is empty")
 	}
 
 	client := common.NewClient(cfg)
@@ -36,7 +37,7 @@ func main() {
 	parentSkills := skills.NewState()
 
 	todo := newTodoStateStore()
-	subAgentMgr := newSubAgentManager(4)
+	subAgentMgr := subagent.NewManager(4)
 	subAgentRunner := func(ctx context.Context, taskSummary string) (string, error) {
 		if err := ctx.Err(); err != nil {
 			return "", err
@@ -88,7 +89,7 @@ func main() {
 		}
 		if text == "/exit" || text == "/quit" {
 			fmt.Println("bye")
-			return
+			return nil
 		}
 		if text == "/reset" {
 			messages = []responses.ResponseInputItemUnionParam{
@@ -121,8 +122,9 @@ func main() {
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Printf("input error: %v\n", err)
+		return fmt.Errorf("input error: %w", err)
 	}
+	return nil
 }
 
 func runToolLoop(
@@ -132,7 +134,7 @@ func runToolLoop(
 	handlers map[string]toolHandler,
 	todo *todoStateStore,
 	messages []responses.ResponseInputItemUnionParam,
-	subAgentMgr *subAgentManager,
+	subAgentMgr *subagent.Manager,
 	skillState *skills.State,
 	skillRegistry *skills.Registry,
 ) (string, error) {

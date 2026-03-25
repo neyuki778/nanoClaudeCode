@@ -1,10 +1,11 @@
-package main
+package runtime
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"nanocc/agents/skills"
+	"nanocc/agents/subagent"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,6 +38,8 @@ type toolField struct {
 	Description string
 	Required    bool
 }
+
+type subAgentRunner = subagent.Runner
 
 type subAgentSpawnArgs struct {
 	TaskSummary string `json:"task_summary"`
@@ -149,12 +152,6 @@ func (s *todoStateStore) ContextMessage() string {
 	}
 
 	var b strings.Builder
-	// if phase == todoPhaseCompleted {
-	// 	fmt.Fprintf(&b, "Current TODO status: (empty). Last TODO status: ")
-	// 	for _, task := range tasks {
-	// 		fmt.Fprintf(&b, )
-	// 	}
-	// }
 	fmt.Fprintf(&b, "Current TODO status (v%d):\n", version)
 	for _, task := range tasks {
 		state := " "
@@ -221,7 +218,6 @@ func validateTodo(tasks []todoTask, currentID string) error {
 		return fmt.Errorf("current_id must be empty when tasks is empty")
 	}
 
-	// 判断 task 是否重复的 set
 	seen := make(map[string]struct{}, len(tasks))
 	hasCurrent := trimmedCurrent == ""
 	for index, task := range tasks {
@@ -276,16 +272,15 @@ func baseToolSpecs(todo *todoStateStore) []toolSpec {
 		{
 			Name:        "todo_set",
 			Description: "Replace TODO state with latest full list and current task.",
-			// todo_set 使用专用 schema，要求一次提交完整状态。
-			Parameters: todoSetSchema(),
-			Handler:    todoSetHandler(todo),
+			Parameters:  todoSetSchema(),
+			Handler:     todoSetHandler(todo),
 		},
 	}
 }
 
 func parentToolSpecs(
 	todo *todoStateStore,
-	manager *subAgentManager,
+	manager *subagent.Manager,
 	runner subAgentRunner,
 	skillState *skills.State,
 	skillRegistry *skills.Registry,
@@ -332,7 +327,6 @@ func childToolSpecs(todo *todoStateStore) []toolSpec {
 }
 
 func todoSetSchema() map[string]any {
-	// 通过 additionalProperties=false 约束模型只输出定义过的字段。
 	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
@@ -692,12 +686,11 @@ func todoSetHandler(todo *todoStateStore) toolHandler {
 				doneCount++
 			}
 		}
-		// 返回可读摘要，便于模型和用户同时确认当前 TODO 状态。
 		return fmt.Sprintf("todo updated v%d: %d total, %d done\n%s", version, len(tasks), doneCount, todo.RenderForUser())
 	}
 }
 
-func subAgentSpawnHandler(manager *subAgentManager, runner subAgentRunner) toolHandler {
+func subAgentSpawnHandler(manager *subagent.Manager, runner subAgentRunner) toolHandler {
 	return func(arguments string) string {
 		if manager == nil {
 			return "error: subagent manager is not configured"
@@ -723,7 +716,7 @@ func subAgentSpawnHandler(manager *subAgentManager, runner subAgentRunner) toolH
 	}
 }
 
-func subAgentWaitHandler(manager *subAgentManager) toolHandler {
+func subAgentWaitHandler(manager *subagent.Manager) toolHandler {
 	return func(arguments string) string {
 		if manager == nil {
 			return "error: subagent manager is not configured"
@@ -810,7 +803,7 @@ func skillUnloadHandler(state *skills.State) toolHandler {
 	}
 }
 
-func formatWaitResult(jobs []subAgentJob) string {
+func formatWaitResult(jobs []subagent.Job) string {
 	if len(jobs) == 0 {
 		return "no subagent jobs found"
 	}
@@ -819,10 +812,10 @@ func formatWaitResult(jobs []subAgentJob) string {
 	fmt.Fprintf(&b, "subagent wait finished: %d job(s)\n", len(jobs))
 	for _, job := range jobs {
 		fmt.Fprintf(&b, "- %s [%s] attempt=%d", job.ID, job.Status, job.Attempt)
-		if job.Status == subAgentJobSucceeded && strings.TrimSpace(job.ResultText) != "" {
+		if job.Status == subagent.JobSucceeded && strings.TrimSpace(job.ResultText) != "" {
 			fmt.Fprintf(&b, "\n  result: %s", strings.TrimSpace(job.ResultText))
 		}
-		if job.Status != subAgentJobSucceeded && strings.TrimSpace(job.ErrorText) != "" {
+		if job.Status != subagent.JobSucceeded && strings.TrimSpace(job.ErrorText) != "" {
 			fmt.Fprintf(&b, "\n  error: %s", strings.TrimSpace(job.ErrorText))
 		}
 		b.WriteString("\n")

@@ -1,4 +1,4 @@
-package main
+package subagent
 
 import (
 	"context"
@@ -9,24 +9,24 @@ import (
 	"time"
 )
 
-type subAgentJobStatus string
+type JobStatus string
 
 const (
-	subAgentJobQueued    subAgentJobStatus = "queued"
-	subAgentJobRunning   subAgentJobStatus = "running"
-	subAgentJobSucceeded subAgentJobStatus = "succeeded"
-	subAgentJobFailed    subAgentJobStatus = "failed"
-	subAgentJobCanceled  subAgentJobStatus = "canceled"
+	JobQueued    JobStatus = "queued"
+	JobRunning   JobStatus = "running"
+	JobSucceeded JobStatus = "succeeded"
+	JobFailed    JobStatus = "failed"
+	JobCanceled  JobStatus = "canceled"
 )
 
-type subAgentJob struct {
+type Job struct {
 	ID          string
 	TaskSummary string
 	Timeout     time.Duration
 	MaxRetries  int
 	Attempt     int
 
-	Status     subAgentJobStatus
+	Status     JobStatus
 	ResultText string
 	ErrorText  string
 
@@ -35,28 +35,28 @@ type subAgentJob struct {
 	cancel context.CancelFunc
 }
 
-type subAgentRunner func(ctx context.Context, taskSummary string) (string, error)
+type Runner func(ctx context.Context, taskSummary string) (string, error)
 
-type subAgentManager struct {
+type Manager struct {
 	mu sync.RWMutex
 
 	// sem 是并发限流器：容量即最大并发子代理数。
 	sem    chan struct{}
 	nextID int64
-	jobs   map[string]*subAgentJob
+	jobs   map[string]*Job
 }
 
-func newSubAgentManager(maxParallel int) *subAgentManager {
+func NewManager(maxParallel int) *Manager {
 	if maxParallel <= 0 {
 		maxParallel = 4
 	}
-	return &subAgentManager{
+	return &Manager{
 		sem:  make(chan struct{}, maxParallel),
-		jobs: make(map[string]*subAgentJob),
+		jobs: make(map[string]*Job),
 	}
 }
 
-func (m *subAgentManager) Spawn(taskSummary string, timeout time.Duration, maxRetries int, runner subAgentRunner) (string, error) {
+func (m *Manager) Spawn(taskSummary string, timeout time.Duration, maxRetries int, runner Runner) (string, error) {
 	taskSummary = strings.TrimSpace(taskSummary)
 	if taskSummary == "" {
 		return "", fmt.Errorf("empty task summary")
@@ -79,12 +79,12 @@ func (m *subAgentManager) Spawn(taskSummary string, timeout time.Duration, maxRe
 	m.mu.Lock()
 	m.nextID++
 	id := fmt.Sprintf("sa-%d", m.nextID)
-	job := &subAgentJob{
+	job := &Job{
 		ID:          id,
 		TaskSummary: taskSummary,
 		Timeout:     timeout,
 		MaxRetries:  maxRetries,
-		Status:      subAgentJobQueued,
+		Status:      JobQueued,
 		Done:        make(chan struct{}),
 		cancel:      cancel,
 	}
@@ -96,7 +96,7 @@ func (m *subAgentManager) Spawn(taskSummary string, timeout time.Duration, maxRe
 	return id, nil
 }
 
-func (m *subAgentManager) runJob(baseCtx context.Context, job *subAgentJob, runner subAgentRunner) {
+func (m *Manager) runJob(baseCtx context.Context, job *Job, runner Runner) {
 	defer close(job.Done)
 	defer job.cancel()
 
@@ -106,7 +106,7 @@ func (m *subAgentManager) runJob(baseCtx context.Context, job *subAgentJob, runn
 		defer func() { <-m.sem }()
 	case <-baseCtx.Done():
 		// 任务在启动前就被取消。
-		m.setFinal(job.ID, subAgentJobCanceled, "", errString(baseCtx.Err()))
+		m.setFinal(job.ID, JobCanceled, "", errString(baseCtx.Err()))
 		return
 	}
 
@@ -114,7 +114,7 @@ func (m *subAgentManager) runJob(baseCtx context.Context, job *subAgentJob, runn
 	totalAttempts := job.MaxRetries + 1
 	for attempt := 1; attempt <= totalAttempts; attempt++ {
 		if baseCtx.Err() != nil {
-			m.setFinal(job.ID, subAgentJobCanceled, "", errString(baseCtx.Err()))
+			m.setFinal(job.ID, JobCanceled, "", errString(baseCtx.Err()))
 			return
 		}
 
@@ -130,22 +130,22 @@ func (m *subAgentManager) runJob(baseCtx context.Context, job *subAgentJob, runn
 		cancel()
 
 		if err == nil {
-			m.setFinal(job.ID, subAgentJobSucceeded, strings.TrimSpace(result), "")
+			m.setFinal(job.ID, JobSucceeded, strings.TrimSpace(result), "")
 			return
 		}
 		if baseCtx.Err() != nil {
-			m.setFinal(job.ID, subAgentJobCanceled, "", errString(baseCtx.Err()))
+			m.setFinal(job.ID, JobCanceled, "", errString(baseCtx.Err()))
 			return
 		}
 		if attempt == totalAttempts {
 			// 重试已耗尽，进入失败终态。
-			m.setFinal(job.ID, subAgentJobFailed, "", strings.TrimSpace(err.Error()))
+			m.setFinal(job.ID, JobFailed, "", strings.TrimSpace(err.Error()))
 			return
 		}
 	}
 }
 
-func (m *subAgentManager) Wait(ids []string) []subAgentJob {
+func (m *Manager) Wait(ids []string) []Job {
 	jobs := m.pickJobs(ids)
 	for _, job := range jobs {
 		// 等待每个目标子代理结束（Done close）。
@@ -154,16 +154,16 @@ func (m *subAgentManager) Wait(ids []string) []subAgentJob {
 	return m.Snapshot(ids)
 }
 
-func (m *subAgentManager) WaitAll() []subAgentJob {
+func (m *Manager) WaitAll() []Job {
 	return m.Wait(nil)
 }
 
-func (m *subAgentManager) Snapshot(ids []string) []subAgentJob {
+func (m *Manager) Snapshot(ids []string) []Job {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	selectedIDs := m.pickIDsLocked(ids)
-	out := make([]subAgentJob, 0, len(selectedIDs))
+	out := make([]Job, 0, len(selectedIDs))
 	for _, id := range selectedIDs {
 		job := m.jobs[id]
 		cp := *job
@@ -174,20 +174,20 @@ func (m *subAgentManager) Snapshot(ids []string) []subAgentJob {
 	return out
 }
 
-func (m *subAgentManager) PendingCount() int {
+func (m *Manager) PendingCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	count := 0
 	for _, job := range m.jobs {
-		if job.Status == subAgentJobQueued || job.Status == subAgentJobRunning {
+		if job.Status == JobQueued || job.Status == JobRunning {
 			count++
 		}
 	}
 	return count
 }
 
-func (m *subAgentManager) CancelAll() int {
+func (m *Manager) CancelAll() int {
 	m.mu.RLock()
 	cancels := make([]context.CancelFunc, 0, len(m.jobs))
 	for _, job := range m.jobs {
@@ -206,18 +206,18 @@ func (m *subAgentManager) CancelAll() int {
 	return len(cancels)
 }
 
-func (m *subAgentManager) setRunning(id string, attempt int) {
+func (m *Manager) setRunning(id string, attempt int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	job, ok := m.jobs[id]
 	if !ok || isFinalStatus(job.Status) {
 		return
 	}
-	job.Status = subAgentJobRunning
+	job.Status = JobRunning
 	job.Attempt = attempt
 }
 
-func (m *subAgentManager) setFinal(id string, status subAgentJobStatus, resultText, errText string) {
+func (m *Manager) setFinal(id string, status JobStatus, resultText, errText string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	job, ok := m.jobs[id]
@@ -230,19 +230,19 @@ func (m *subAgentManager) setFinal(id string, status subAgentJobStatus, resultTe
 	job.ErrorText = strings.TrimSpace(errText)
 }
 
-func (m *subAgentManager) pickJobs(ids []string) []*subAgentJob {
+func (m *Manager) pickJobs(ids []string) []*Job {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	selectedIDs := m.pickIDsLocked(ids)
-	out := make([]*subAgentJob, 0, len(selectedIDs))
+	out := make([]*Job, 0, len(selectedIDs))
 	for _, id := range selectedIDs {
 		out = append(out, m.jobs[id])
 	}
 	return out
 }
 
-func (m *subAgentManager) pickIDsLocked(ids []string) []string {
+func (m *Manager) pickIDsLocked(ids []string) []string {
 	if len(ids) == 0 {
 		out := make([]string, 0, len(m.jobs))
 		for id := range m.jobs {
@@ -272,8 +272,8 @@ func (m *subAgentManager) pickIDsLocked(ids []string) []string {
 	return out
 }
 
-func isFinalStatus(status subAgentJobStatus) bool {
-	return status == subAgentJobSucceeded || status == subAgentJobFailed || status == subAgentJobCanceled
+func isFinalStatus(status JobStatus) bool {
+	return status == JobSucceeded || status == JobFailed || status == JobCanceled
 }
 
 func errString(err error) string {
