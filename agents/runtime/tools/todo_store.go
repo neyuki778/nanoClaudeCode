@@ -18,6 +18,13 @@ type TodoTask struct {
 	Done bool   `json:"done"`
 }
 
+type PersistedTodo struct {
+	Tasks     []TodoTask `json:"tasks,omitempty"`
+	CurrentID string     `json:"current_id,omitempty"`
+	Version   int        `json:"version"`
+	Phase     string     `json:"phase,omitempty"`
+}
+
 type todoSnapshot struct {
 	tasks       []TodoTask
 	lastID      string
@@ -44,6 +51,48 @@ func (s *TodoStore) Reset() {
 	s.currentID = ""
 	s.version = 0
 	s.phase = todoPhaseEmpty
+}
+
+func (s *TodoStore) Export() PersistedTodo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	tasks := make([]TodoTask, len(s.tasks))
+	copy(tasks, s.tasks)
+	return PersistedTodo{
+		Tasks:     tasks,
+		CurrentID: s.currentID,
+		Version:   s.version,
+		Phase:     s.phase,
+	}
+}
+
+func (s *TodoStore) Import(saved PersistedTodo) error {
+	if err := validateTodo(saved.Tasks, saved.CurrentID); err != nil {
+		if len(saved.Tasks) > 0 {
+			return err
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.tasks = make([]TodoTask, len(saved.Tasks))
+	copy(s.tasks, saved.Tasks)
+	s.currentID = strings.TrimSpace(saved.CurrentID)
+	s.version = saved.Version
+	s.phase = strings.TrimSpace(saved.Phase)
+	if s.phase == "" {
+		switch {
+		case len(s.tasks) == 0:
+			s.phase = todoPhaseEmpty
+		case isTodoCompletedState(s.tasks, s.currentID):
+			s.phase = todoPhaseCompleted
+		default:
+			s.phase = todoPhaseActive
+		}
+	}
+	return nil
 }
 
 func (s *TodoStore) Set(tasks []TodoTask, currentID string) (int, error) {

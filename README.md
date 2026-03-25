@@ -19,7 +19,7 @@ Agent 循环（当前版本，含压缩与会话持久化）：
 
 ```
 启动:
-  load .sessions/current.json (if exists) -> messages[]
+  read .sessions/current (if exists) -> load .sessions/<session_id>.json -> messages[]
 
 每轮:
 User -> append -> micro_compact -> (optional) auto_compact
@@ -33,13 +33,13 @@ User -> append -> micro_compact -> (optional) auto_compact
    execute tools      final text
    append results     append assistant
           \             /
-           +-- persist .sessions/current.json --+
+           +-- persist .sessions/<session_id>.json --+
                            |
                         next turn
 
 /reset:
-  archive -> .sessions/archive/<timestamp>.json
-  clear in-memory context + current session
+  archive current snapshot -> .sessions/archive/<timestamp>.json
+  clear in-memory context + current session pointer
 ```
 
 循环永远不变。每个课程只在循环之上叠加一个 harness 机制。
@@ -63,12 +63,15 @@ User -> append -> micro_compact -> (optional) auto_compact
 - **子代理工具**：`subagent_spawn`、`subagent_wait`（并发上限 4，失败重试上限 2）
 - **父代理约束**：存在 pending 子代理时，父代理不能直接结束，必须先 `subagent_wait`
 - **会话控制**：`/reset` 会清理上下文并取消未完成子代理
-- **会话持久化（状态占位）**：README 先按已实现标记，代码后续补齐
-- **后台任务（状态占位）**：README 先按已实现标记，代码后续补齐
+- **会话持久化**：每个会话保存为 `.sessions/<session_id>.json`，继续对话会持续写回同一文件
+- **会话恢复**：支持 `/sessions`、`/resume`、`/resume <session_id>`
+- **当前会话指针**：`.sessions/current` 记录当前激活会话
+- **上下文压缩**：每轮 `micro compact`，超阈值自动摘要压缩
 - **工具代码分层**：`agents/runtime/tools` 按类型拆分（base/todo/skills/subagent/schema/parser）
 - **Skills（按需激活）**：`skill_list`、`skill_load`、`skill_unload`
 - **技能来源**：运行目录 `.skills/`（支持 front matter：`name`、`description`）
 - **模型配置**：子代理模型读取 `SUBAGENT_MODEL`（为空回退 `OPENAI_MODEL`）
+- **MVP 未完成**：后台任务（`bash_bg` / `bg_wait` / `bg_list`）尚未实现
 
 ### `demo/cmd/chatbot` — 基础对话 Agent
 
@@ -117,6 +120,14 @@ DEBUG_HTTP=false
 go run ./cmd/agent/main.go
 ```
 
+启动后可用命令：
+
+- `/sessions`：列出已保存的会话 ID
+- `/resume`：恢复当前会话指针指向的会话
+- `/resume <session_id>`：恢复指定会话，并将其设为当前会话
+- `/reset`：归档当前会话快照，清空内存上下文，并清除当前会话指针
+- `/exit`：退出
+
 ---
 
 ## 依赖
@@ -141,6 +152,7 @@ nanoClaudeCode/
 │   │   └── tools/                  # 工具实现拆分（base/todo/skills/subagent 等）
 │   ├── subagent/                   # 子代理并发管理器（库包）
 │   ├── compact/                    # s06: 上下文压缩逻辑
+│   ├── sessions/                   # s07: 会话持久化与恢复
 │   └── skills/                     # skills 注册/状态与 .skills 加载
 ├── demo/                          # 课程式主线实现（s01-s03）
 │   ├── cmd/

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"nanocc/agents/compact"
 	rtools "nanocc/agents/runtime/tools"
+	"nanocc/agents/sessions"
 	"nanocc/agents/skills"
 	"nanocc/agents/subagent"
 	"os"
@@ -36,6 +37,7 @@ func RunInteractive() error {
 		skillRegistry = skills.NewRegistry()
 	}
 	parentSkills := skills.NewState()
+	sessionStore := sessions.NewStore(".sessions")
 
 	todo := rtools.NewTodoStore()
 	subAgentMgr := subagent.NewManager(4)
@@ -75,7 +77,14 @@ func RunInteractive() error {
 	}
 
 	fmt.Printf("Tool-use agent started. base_url=%s model=%s subagent_model=%s skills=%d debug_http=%t\n", cfg.BaseURL, cfg.Model, cfg.SubAgentModel, skillRegistry.Count(), cfg.DebugHTTP)
-	fmt.Println("Type your message. Commands: /reset, /exit")
+	if currentID, err := sessionStore.CurrentID(); err != nil {
+		fmt.Printf("warning: failed to inspect saved session: %v\n", err)
+	} else if currentID != "" {
+		if snapshot, err := sessionStore.LoadCurrent(); err == nil && snapshot != nil {
+			fmt.Printf("Saved current session %s from %s. Use /resume or /resume %s to restore it.\n", currentID, snapshot.SavedAt.Format(time.RFC3339), currentID)
+		}
+	}
+	fmt.Println("Type your message. Commands: /sessions, /resume [id], /reset, /exit")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -92,7 +101,66 @@ func RunInteractive() error {
 			fmt.Println("bye")
 			return nil
 		}
+		if text == "/sessions" {
+			ids, err := sessionStore.ListSessions()
+			if err != nil {
+				fmt.Printf("error: failed to list sessions: %v\n", err)
+				continue
+			}
+			currentID, _ := sessionStore.CurrentID()
+			if len(ids) == 0 {
+				fmt.Println("no saved sessions found")
+				continue
+			}
+			fmt.Println("saved sessions:")
+			for _, id := range ids {
+				flag := ""
+				if id == currentID {
+					flag = " [current]"
+				}
+				fmt.Printf("- %s%s\n", id, flag)
+			}
+			continue
+		}
+		if strings.HasPrefix(text, "/resume") {
+			sessionID := strings.TrimSpace(strings.TrimPrefix(text, "/resume"))
+			snapshot, resumedID, err := sessionStore.Resume(sessionID)
+			if err != nil {
+				fmt.Printf("error: failed to load saved session: %v\n", err)
+				continue
+			}
+			if snapshot == nil {
+				if sessionID == "" {
+					fmt.Println("no saved current session found")
+				} else {
+					fmt.Printf("session not found: %s\n", sessionID)
+				}
+				continue
+			}
+
+			loadedMessages, err := sessions.DecodeMessages(snapshot.Messages)
+			if err != nil {
+				fmt.Printf("error: invalid saved session: %v\n", err)
+				continue
+			}
+			messages = loadedMessages
+			if err := todo.Import(snapshot.Todo); err != nil {
+				fmt.Printf("warning: failed to restore todo state: %v\n", err)
+				todo.Reset()
+			}
+			parentSkills.SetActive(snapshot.ActiveSkills)
+			fmt.Printf("session resumed: %s (%d message(s), %d active skill(s), saved_at=%s)\n", resumedID, len(messages), len(snapshot.ActiveSkills), snapshot.SavedAt.Format(time.RFC3339))
+			continue
+		}
 		if text == "/reset" {
+			if archived, err := sessionStore.ArchiveCurrent(); err != nil {
+				fmt.Printf("warning: failed to archive session: %v\n", err)
+			} else if archived != "" {
+				fmt.Printf("archived session to %s\n", archived)
+			}
+			if err := sessionStore.ClearCurrent(); err != nil {
+				fmt.Printf("warning: failed to clear current session: %v\n", err)
+			}
 			messages = []responses.ResponseInputItemUnionParam{
 				responses.ResponseInputItemParamOfMessage(developerMessage, responses.EasyInputMessageRoleDeveloper),
 			}
@@ -118,6 +186,12 @@ func RunInteractive() error {
 
 		// Persist assistant final text into history.
 		messages = append(messages, responses.ResponseInputItemParamOfMessage(answer, responses.EasyInputMessageRoleAssistant))
+		sessionID, err := sessionStore.SaveCurrent(messages, todo, parentSkills)
+		if err != nil {
+			fmt.Printf("warning: failed to save session: %v\n", err)
+		} else if sessionID != "" {
+			fmt.Printf("[session %s saved]\n", sessionID)
+		}
 		fmt.Print(">>> ")
 		fmt.Println(answer)
 	}
