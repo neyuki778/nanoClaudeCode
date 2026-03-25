@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"nanocc/agents/compact"
 	"nanocc/agents/skills"
 	"os"
 	"strings"
@@ -139,6 +140,18 @@ func runToolLoop(
 	inputItems := append([]responses.ResponseInputItemUnionParam{}, messages...)
 
 	for step := 0; step < 20; step++ {
+		// 每轮请求前都先做一次轻量压缩，避免 tool 结果无限膨胀。
+		if compacted, _ := compact.MicroCompact(inputItems, compact.DefaultKeepRecentToolResults); compacted != nil {
+			inputItems = compacted
+		}
+		// 达到阈值时做自动压缩（保留指令 + 最近上下文 + 摘要）。
+		if compact.NeedsAutoCompact(inputItems, compact.DefaultAutoCompactCharLimit) {
+			summary, err := summarizeForAutoCompact(client, model, inputItems)
+			if err == nil && strings.TrimSpace(summary) != "" {
+				inputItems = compact.AutoCompact(inputItems, summary, compact.DefaultAutoCompactKeepRecentK)
+			}
+		}
+
 		// 每轮额外注入一次最新 TODO 摘要，让模型始终看到当前任务状态。
 		// 这里不把 TODO 永久写入历史，避免上下文持续膨胀。
 		requestInput := append([]responses.ResponseInputItemUnionParam{}, inputItems...)
@@ -199,4 +212,29 @@ func runToolLoop(
 	}
 
 	return "", fmt.Errorf("tool loop exceeded max steps")
+}
+
+func summarizeForAutoCompact(
+	client openai.Client,
+	model string,
+	items []responses.ResponseInputItemUnionParam,
+) (string, error) {
+	summaryInput := append([]responses.ResponseInputItemUnionParam{}, items...)
+	summaryInput = append(summaryInput, responses.ResponseInputItemParamOfMessage(
+		"Summarize the conversation for continuation. Keep key decisions, current progress, unresolved issues, TODO state, active skills, and any pending sub-agent work. Use concise plain text.",
+		responses.EasyInputMessageRoleDeveloper,
+	))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	resp, err := client.Responses.New(ctx, responses.ResponseNewParams{
+		Model: openai.ResponsesModel(model),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfInputItemList: summaryInput,
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(resp.OutputText()), nil
 }
