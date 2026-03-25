@@ -4,7 +4,10 @@
 - `go.mod` at repository root defines module `nanocc`.
 - `demo/cmd/chatbot/` contains the basic multi-turn chatbot loop.
 - `demo/cmd/tool_use/` contains the tool-calling agent loop and tool handlers.
-- `agents/subagent/` contains the parent/sub-agent runtime with skill-aware tool-use loop.
+- `cmd/agent/` contains the unified interactive agent entrypoint.
+- `agents/runtime/` contains the parent runtime loop, tool dispatch, and orchestration.
+- `agents/runtime/tools/` contains typed tool modules (base, todo, skills, subagent, schema, parser).
+- `agents/subagent/` contains reusable sub-agent manager/concurrency control primitives.
 - `agents/skills/` contains shared skill registry/state loading from runtime `.skills/`.
 - `internal/common/` contains shared config/client setup.
 - `docs/` stores project docs (for example `docs/response-api.md`).
@@ -14,7 +17,7 @@
 ## Build, Test, and Development Commands
 - `go run ./demo/cmd/tool_use` — run the basic tool-use agent.
 - `go run ./demo/cmd/chatbot` — run the basic chatbot loop.
-- `go run ./agents/subagent` — run parent/sub-agent loop with skills + subagent tools.
+- `go run ./cmd/agent` — run parent/sub-agent loop with skills + subagent tools.
 - `go test ./...` — run all Go tests/packages (currently some packages have no test files).
 - `go build ./...` — verify everything builds cleanly.
 
