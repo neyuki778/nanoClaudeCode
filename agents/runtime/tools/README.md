@@ -8,6 +8,7 @@
 - `schemas.go`：各工具的 JSON Schema
 - `parse.go`：各工具参数解析
 - `handlers_base.go`：`bash` / `read_file` / `write_file`
+- `handlers_background.go`：`bash_bg` / `bg_wait` / `bg_list`
 - `handlers_todo.go`：`todo_set`
 - `handlers_skill.go`：`skill_list` / `skill_load` / `skill_unload`
 - `handlers_subagent.go`：`subagent_spawn` / `subagent_wait`

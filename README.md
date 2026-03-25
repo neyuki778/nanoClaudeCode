@@ -15,7 +15,7 @@ Harness = Tools + Knowledge + Observation + Action Interfaces + Permissions
 模型做推理，Harness 提供上下文。
 ```
 
-Agent 循环（当前版本，含压缩与会话持久化）：
+Agent 循环（当前版本，含压缩、会话持久化与后台任务通知）：
 
 ```
 启动:
@@ -23,7 +23,7 @@ Agent 循环（当前版本，含压缩与会话持久化）：
 
 每轮:
 User -> append -> micro_compact -> (optional) auto_compact
-     -> inject runtime state (todo / skills / notifications)
+     -> inject runtime state (todo / skills / background notifications)
      -> LLM -> response
                |
      stop_reason == tool_use ?
@@ -61,6 +61,8 @@ User -> append -> micro_compact -> (optional) auto_compact
 
 核心特性：
 - **子代理工具**：`subagent_spawn`、`subagent_wait`（并发上限 4，失败重试上限 2）
+- **后台任务工具**：`bash_bg`、`bg_wait`、`bg_list`
+- **后台完成通知**：每轮请求前自动注入已完成后台任务结果，避免模型漏看异步结果
 - **父代理约束**：存在 pending 子代理时，父代理不能直接结束，必须先 `subagent_wait`
 - **会话控制**：`/reset` 会清理上下文并取消未完成子代理
 - **会话持久化**：每个会话保存为 `.sessions/<session_id>.json`，继续对话会持续写回同一文件
@@ -71,7 +73,7 @@ User -> append -> micro_compact -> (optional) auto_compact
 - **Skills（按需激活）**：`skill_list`、`skill_load`、`skill_unload`
 - **技能来源**：运行目录 `.skills/`（支持 front matter：`name`、`description`）
 - **模型配置**：子代理模型读取 `SUBAGENT_MODEL`（为空回退 `OPENAI_MODEL`）
-- **MVP 未完成**：后台任务（`bash_bg` / `bg_wait` / `bg_list`）尚未实现
+- **后台任务当前边界**：暂未做后台任务持久化与重启恢复；进程重启后旧后台任务状态不会恢复
 
 ### `demo/cmd/chatbot` — 基础对话 Agent
 
@@ -120,6 +122,13 @@ DEBUG_HTTP=false
 go run ./cmd/agent/main.go
 ```
 
+父代理当前可用工具：
+
+- 基础工具：`bash`、`read_file`、`write_file`、`todo_set`
+- skills：`skill_list`、`skill_load`、`skill_unload`
+- 子代理：`subagent_spawn`、`subagent_wait`
+- 后台任务：`bash_bg`、`bg_wait`、`bg_list`
+
 启动后可用命令：
 
 - `/sessions`：列出已保存的会话 ID
@@ -152,6 +161,7 @@ nanoClaudeCode/
 │   │   └── tools/                  # 工具实现拆分（base/todo/skills/subagent 等）
 │   ├── subagent/                   # 子代理并发管理器（库包）
 │   ├── compact/                    # s06: 上下文压缩逻辑
+│   ├── background/                 # s08: 后台任务管理
 │   ├── sessions/                   # s07: 会话持久化与恢复
 │   └── skills/                     # skills 注册/状态与 .skills 加载
 ├── demo/                          # 课程式主线实现（s01-s03）
