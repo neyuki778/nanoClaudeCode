@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"nanocc/agents/compact"
+	rtools "nanocc/agents/runtime/tools"
 	"nanocc/agents/skills"
 	"nanocc/agents/subagent"
 	"os"
@@ -36,19 +37,19 @@ func RunInteractive() error {
 	}
 	parentSkills := skills.NewState()
 
-	todo := newTodoStateStore()
+	todo := rtools.NewTodoStore()
 	subAgentMgr := subagent.NewManager(4)
 	subAgentRunner := func(ctx context.Context, taskSummary string) (string, error) {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
 
-		childTodo := newTodoStateStore()
+		childTodo := rtools.NewTodoStore()
 		childSkills := skills.NewState()
 		childSkills.SetActive(parentSkills.ActiveNames())
-		childSpecs := childToolSpecs(childTodo)
-		childTools := buildTools(childSpecs)
-		childHandlers := buildToolHandlers(childSpecs)
+		childSpecs := rtools.ChildSpecs(childTodo)
+		childTools := rtools.BuildTools(childSpecs)
+		childHandlers := rtools.BuildHandlers(childSpecs)
 
 		childMessages := []responses.ResponseInputItemUnionParam{
 			responses.ResponseInputItemParamOfMessage(developerMessage, responses.EasyInputMessageRoleDeveloper),
@@ -65,9 +66,9 @@ func RunInteractive() error {
 		return answer, nil
 	}
 
-	specs := parentToolSpecs(todo, subAgentMgr, subAgentRunner, parentSkills, skillRegistry)
-	tools := buildTools(specs)
-	handlers := buildToolHandlers(specs)
+	specs := rtools.ParentSpecs(todo, subAgentMgr, subAgentRunner, parentSkills, skillRegistry)
+	tools := rtools.BuildTools(specs)
+	handlers := rtools.BuildHandlers(specs)
 
 	messages := []responses.ResponseInputItemUnionParam{
 		responses.ResponseInputItemParamOfMessage(developerMessage, responses.EasyInputMessageRoleDeveloper),
@@ -131,8 +132,8 @@ func runToolLoop(
 	client openai.Client,
 	model string,
 	tools []responses.ToolUnionParam,
-	handlers map[string]toolHandler,
-	todo *todoStateStore,
+	handlers map[string]rtools.Handler,
+	todo *rtools.TodoStore,
 	messages []responses.ResponseInputItemUnionParam,
 	subAgentMgr *subagent.Manager,
 	skillState *skills.State,
