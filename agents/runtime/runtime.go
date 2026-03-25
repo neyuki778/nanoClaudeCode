@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"nanocc/agents/background"
 	"nanocc/agents/compact"
 	rtools "nanocc/agents/runtime/tools"
 	"nanocc/agents/sessions"
@@ -40,6 +41,7 @@ func RunInteractive() error {
 	sessionStore := sessions.NewStore(".sessions")
 
 	todo := rtools.NewTodoStore()
+	backgroundMgr := background.NewManager()
 	subAgentMgr := subagent.NewManager(4)
 	subAgentRunner := func(ctx context.Context, taskSummary string) (string, error) {
 		if err := ctx.Err(); err != nil {
@@ -58,7 +60,7 @@ func RunInteractive() error {
 			responses.ResponseInputItemParamOfMessage("Sub-agent task summary:\n"+strings.TrimSpace(taskSummary), responses.EasyInputMessageRoleUser),
 		}
 
-		answer, err := runToolLoop(client, cfg.SubAgentModel, childTools, childHandlers, childTodo, childMessages, nil, childSkills, skillRegistry)
+		answer, err := runToolLoop(client, cfg.SubAgentModel, childTools, childHandlers, childTodo, childMessages, nil, nil, childSkills, skillRegistry)
 		if err != nil {
 			return "", err
 		}
@@ -68,7 +70,7 @@ func RunInteractive() error {
 		return answer, nil
 	}
 
-	specs := rtools.ParentSpecs(todo, subAgentMgr, subAgentRunner, parentSkills, skillRegistry)
+	specs := rtools.ParentSpecs(todo, backgroundMgr, subAgentMgr, subAgentRunner, parentSkills, skillRegistry)
 	tools := rtools.BuildTools(specs)
 	handlers := rtools.BuildHandlers(specs)
 
@@ -178,7 +180,7 @@ func RunInteractive() error {
 		// 每个用户输入视为一个新任务，清理上一轮 TODO，避免跨轮状态干扰。
 		todo.Reset()
 		messages = append(messages, responses.ResponseInputItemParamOfMessage(text, responses.EasyInputMessageRoleUser))
-		answer, err := runToolLoop(client, cfg.Model, tools, handlers, todo, messages, subAgentMgr, parentSkills, skillRegistry)
+		answer, err := runToolLoop(client, cfg.Model, tools, handlers, todo, messages, backgroundMgr, subAgentMgr, parentSkills, skillRegistry)
 		if err != nil {
 			fmt.Printf("error: %v\n", err)
 			continue
@@ -209,6 +211,7 @@ func runToolLoop(
 	handlers map[string]rtools.Handler,
 	todo *rtools.TodoStore,
 	messages []responses.ResponseInputItemUnionParam,
+	backgroundMgr *background.Manager,
 	subAgentMgr *subagent.Manager,
 	skillState *skills.State,
 	skillRegistry *skills.Registry,
@@ -232,6 +235,11 @@ func runToolLoop(
 		// 每轮额外注入一次最新 TODO 摘要，让模型始终看到当前任务状态。
 		// 这里不把 TODO 永久写入历史，避免上下文持续膨胀。
 		requestInput := append([]responses.ResponseInputItemUnionParam{}, inputItems...)
+		if backgroundMgr != nil {
+			if notes := strings.TrimSpace(rtools.FormatBackgroundNotifications(backgroundMgr.DrainNotifications())); notes != "" {
+				requestInput = append(requestInput, responses.ResponseInputItemParamOfMessage(notes, responses.EasyInputMessageRoleDeveloper))
+			}
+		}
 		requestInput = append(requestInput, responses.ResponseInputItemParamOfMessage(todo.ContextMessage(), responses.EasyInputMessageRoleDeveloper))
 		if skillState != nil && skillRegistry != nil {
 			requestInput = append(requestInput, responses.ResponseInputItemParamOfMessage(skillRegistry.NamesContextMessage(), responses.EasyInputMessageRoleDeveloper))

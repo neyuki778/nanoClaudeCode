@@ -80,11 +80,8 @@ func safeWorkspacePath(path string) (string, error) {
 }
 
 func runBash(command string) string {
-	blocked := []string{"rm -rf /", "shutdown", "reboot", "mkfs", ":(){:|:&};:"}
-	for _, banned := range blocked {
-		if strings.Contains(command, banned) {
-			return "blocked: dangerous command"
-		}
+	if err := validateBashCommand(command); err != nil {
+		return "blocked: " + err.Error()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -102,6 +99,20 @@ func runBash(command string) string {
 	if err != nil {
 		return "error: " + err.Error() + "\n" + text
 	}
+	return truncateOutput(text)
+}
+
+func validateBashCommand(command string) error {
+	blocked := []string{"rm -rf /", "shutdown", "reboot", "mkfs", ":(){:|:&};:"}
+	for _, banned := range blocked {
+		if strings.Contains(command, banned) {
+			return fmt.Errorf("dangerous command")
+		}
+	}
+	return nil
+}
+
+func truncateOutput(text string) string {
 	if len(text) > 50000 {
 		return text[:50000]
 	}

@@ -96,3 +96,21 @@ func skillNameSchema(description string) map[string]any {
 		"required": []string{"name"},
 	}
 }
+
+func backgroundWaitSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"task_id": map[string]any{
+				"type":        "string",
+				"description": "Background task id to wait for.",
+			},
+			"timeout_sec": map[string]any{
+				"type":        "integer",
+				"description": "How long to wait before returning still running.",
+			},
+		},
+		"required": []string{"task_id"},
+	}
+}

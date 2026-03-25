@@ -20,6 +20,11 @@ type skillNameArgs struct {
 	Name string `json:"name"`
 }
 
+type backgroundWaitArgs struct {
+	TaskID     string `json:"task_id"`
+	TimeoutSec int    `json:"timeout_sec"`
+}
+
 func parseCommand(arguments string) (string, error) {
 	var args struct {
 		Command string `json:"command"`
@@ -32,6 +37,24 @@ func parseCommand(arguments string) (string, error) {
 		return "", fmt.Errorf("empty command")
 	}
 	return args.Command, nil
+}
+
+func parseBackgroundWaitArgs(arguments string) (backgroundWaitArgs, error) {
+	var args backgroundWaitArgs
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return backgroundWaitArgs{}, err
+	}
+	args.TaskID = strings.TrimSpace(args.TaskID)
+	if args.TaskID == "" {
+		return backgroundWaitArgs{}, fmt.Errorf("empty task_id")
+	}
+	if args.TimeoutSec < 0 {
+		return backgroundWaitArgs{}, fmt.Errorf("timeout_sec must be >= 0")
+	}
+	if args.TimeoutSec > 3600 {
+		return backgroundWaitArgs{}, fmt.Errorf("timeout_sec too large: max 3600")
+	}
+	return args, nil
 }
 
 func parseReadFileArgs(arguments string) (string, int, error) {

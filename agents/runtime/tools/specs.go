@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"nanocc/agents/background"
 	"nanocc/agents/skills"
 	"nanocc/agents/subagent"
 )
@@ -38,6 +39,7 @@ func baseSpecs(todo *TodoStore) []Spec {
 
 func ParentSpecs(
 	todo *TodoStore,
+	backgroundMgr *background.Manager,
 	manager *subagent.Manager,
 	runner subagent.Runner,
 	skillState *skills.State,
@@ -45,6 +47,24 @@ func ParentSpecs(
 ) []Spec {
 	specs := append([]Spec{}, baseSpecs(todo)...)
 	specs = append(specs,
+		Spec{
+			Name:        "bash_bg",
+			Description: "Start a background shell command and return a task id immediately.",
+			Parameters:  objectSchemaFromFields(reqString("command", "Shell command to run in background")),
+			Handler:     bashBgHandler(backgroundMgr),
+		},
+		Spec{
+			Name:        "bg_wait",
+			Description: "Wait for one background task to finish, with optional timeout.",
+			Parameters:  backgroundWaitSchema(),
+			Handler:     bgWaitHandler(backgroundMgr),
+		},
+		Spec{
+			Name:        "bg_list",
+			Description: "List known background tasks and their statuses.",
+			Parameters:  skillListSchema(),
+			Handler:     bgListHandler(backgroundMgr),
+		},
 		Spec{
 			Name:        "skill_list",
 			Description: "List all skills discovered from .skills directory and show active flags.",
