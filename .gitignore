@@ -2,6 +2,8 @@
 # Ignore reference materials directory
 ref/
 .skills/
+.sessions/
+.cache/
 
 # --- OS ---
 .DS_Store

@@ -39,6 +39,7 @@ func RunInteractive() error {
 	}
 	parentSkills := skills.NewState()
 	sessionStore := sessions.NewStore(".sessions")
+	activeSessionID := ""
 
 	todo := rtools.NewTodoStore()
 	backgroundMgr := background.NewManager()
@@ -126,6 +127,34 @@ func RunInteractive() error {
 		}
 		if strings.HasPrefix(text, "/resume") {
 			sessionID := strings.TrimSpace(strings.TrimPrefix(text, "/resume"))
+			if sessionID == "" {
+				ids, err := sessionStore.ListSessions()
+				if err != nil {
+					fmt.Printf("error: failed to list sessions: %v\n", err)
+					continue
+				}
+				currentID, _ := sessionStore.CurrentID()
+				if len(ids) == 0 {
+					fmt.Println("no saved sessions found")
+					continue
+				}
+				fmt.Println("saved sessions:")
+				for _, id := range ids {
+					snapshot, err := sessionStore.Load(id)
+					if err != nil {
+						fmt.Printf("- %s (failed to load preview: %v)\n", id, err)
+						continue
+					}
+					flag := ""
+					if id == currentID {
+						flag = " [current]"
+					}
+					preview := sessions.FirstUserMessagePreview(snapshot.Messages, 48)
+					fmt.Printf("- %s%s | first user message: %q\n", id, flag, preview)
+				}
+				fmt.Println("Use /resume <session_id> to switch to a saved session.")
+				continue
+			}
 			snapshot, resumedID, err := sessionStore.Resume(sessionID)
 			if err != nil {
 				fmt.Printf("error: failed to load saved session: %v\n", err)
@@ -151,6 +180,7 @@ func RunInteractive() error {
 				todo.Reset()
 			}
 			parentSkills.SetActive(snapshot.ActiveSkills)
+			activeSessionID = resumedID
 			fmt.Printf("session resumed: %s (%d message(s), %d active skill(s), saved_at=%s)\n", resumedID, len(messages), len(snapshot.ActiveSkills), snapshot.SavedAt.Format(time.RFC3339))
 			continue
 		}
@@ -163,6 +193,7 @@ func RunInteractive() error {
 			if err := sessionStore.ClearCurrent(); err != nil {
 				fmt.Printf("warning: failed to clear current session: %v\n", err)
 			}
+			activeSessionID = ""
 			messages = []responses.ResponseInputItemUnionParam{
 				responses.ResponseInputItemParamOfMessage(developerMessage, responses.EasyInputMessageRoleDeveloper),
 			}
@@ -188,10 +219,11 @@ func RunInteractive() error {
 
 		// Persist assistant final text into history.
 		messages = append(messages, responses.ResponseInputItemParamOfMessage(answer, responses.EasyInputMessageRoleAssistant))
-		sessionID, err := sessionStore.SaveCurrent(messages, todo, parentSkills)
+		sessionID, err := sessionStore.Save(activeSessionID, messages, todo, parentSkills)
 		if err != nil {
 			fmt.Printf("warning: failed to save session: %v\n", err)
 		} else if sessionID != "" {
+			activeSessionID = sessionID
 			fmt.Printf("[session %s saved]\n", sessionID)
 		}
 		fmt.Print(">>> ")

@@ -95,6 +95,11 @@ func (s *Store) SaveCurrent(messages []responses.ResponseInputItemUnionParam, to
 	if err != nil {
 		return "", err
 	}
+	return s.Save(sessionID, messages, todo, skillState)
+}
+
+func (s *Store) Save(sessionID string, messages []responses.ResponseInputItemUnionParam, todo *rtools.TodoStore, skillState *skills.State) (string, error) {
+	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		sessionID = newSessionID()
 	}
@@ -227,7 +232,8 @@ func (s *Store) sessionPath(id string) string {
 }
 
 func newSessionID() string {
-	return time.Now().UTC().Format("20060102T150405Z")
+	now := time.Now().UTC()
+	return now.Format("20060102T150405") + fmt.Sprintf(".%09dZ", now.Nanosecond())
 }
 
 func EncodeMessages(items []responses.ResponseInputItemUnionParam) []Item {
@@ -295,6 +301,38 @@ func ExtractSummary(items []responses.ResponseInputItemUnionParam) string {
 		}
 	}
 	return ""
+}
+
+func FirstUserMessagePreview(items []Item, maxChars int) string {
+	for _, item := range items {
+		if strings.TrimSpace(item.Type) != "message" {
+			continue
+		}
+		if normalizeMessageRole(item.Role) != responses.EasyInputMessageRoleUser {
+			continue
+		}
+		return shortenPreview(item.Content, maxChars)
+	}
+	return "(no user message)"
+}
+
+func shortenPreview(text string, maxChars int) string {
+	text = strings.TrimSpace(text)
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		return "(empty)"
+	}
+	if maxChars <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxChars {
+		return text
+	}
+	if maxChars == 1 {
+		return string(runes[:1])
+	}
+	return string(runes[:maxChars-1]) + "…"
 }
 
 func normalizeMessageRole(role string) responses.EasyInputMessageRole {
