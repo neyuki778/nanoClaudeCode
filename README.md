@@ -8,38 +8,59 @@
 
 **Agent 是模型，不是框架。**
 
+这个项目可以先从 3 层来理解：
+
+- **模型层**：负责推理、决策、选择什么时候调用工具。
+- **Harness 层**：负责提供工具、知识、观察/行动接口和权限边界。
+- **运行时层**：在同一个 agent loop 上逐步叠加 TODO、Skills、子代理、会话持久化、上下文压缩、后台任务。
+
+```mermaid
+flowchart LR
+    M["模型: 推理 / 决策 / 选择工具"]
+    H["Harness"]
+    T["Tools"]
+    K["Knowledge"]
+    I["Observation / Action Interfaces"]
+    P["Permissions"]
+
+    M -->|发出动作| H
+    H --> T
+    H --> K
+    H --> I
+    H --> P
+    T -->|结果与上下文| M
+    K --> M
+    I --> M
+    P --> M
 ```
-Harness = Tools + Knowledge + Observation + Action Interfaces + Permissions
 
-模型做决策，Harness 执行。
-模型做推理，Harness 提供上下文。
-```
+Agent 循环：
 
-Agent 循环（当前版本，含压缩、会话持久化与后台任务通知）：
+```mermaid
+flowchart TD
+    A([启动或恢复]) --> B["读取 .sessions/current"]
+    B --> C["加载 .sessions/{session_id}.json"]
+    C --> D["初始化 messages"]
 
-```
-启动:
-  read .sessions/current (if exists) -> load .sessions/<session_id>.json -> messages[]
+    D --> E[/用户输入/]
+    E --> F["追加到消息历史"]
+    F --> G["micro compact"]
+    G --> H{"需要 auto compact?"}
+    H -- 是 --> I["生成摘要并压缩上下文"]
+    H -- 否 --> J["注入 TODO / Skills / 后台通知"]
+    I --> J
+    J --> K["调用 LLM"]
+    K --> L{"stop_reason == tool_use?"}
+    L -- 是 --> M["执行 tools"]
+    M --> N["追加 tool results"]
+    N --> O[("持久化 .sessions/{session_id}.json")]
+    O --> E
+    L -- 否 --> P["输出 final text"]
+    P --> Q["追加 assistant 消息"]
+    Q --> O
 
-每轮:
-User -> append -> micro_compact -> (optional) auto_compact
-     -> inject runtime state (todo / skills / background notifications)
-     -> LLM -> response
-               |
-     stop_reason == tool_use ?
-            /             \
-          yes              no
-          |                 |
-   execute tools      final text
-   append results     append assistant
-          \             /
-           +-- persist .sessions/<session_id>.json --+
-                           |
-                        next turn
-
-/reset:
-  archive current snapshot -> .sessions/archive/<timestamp>.json
-  clear in-memory context + current session pointer
+    R[/reset/] --> S["归档到 .sessions/archive/{timestamp}.json"]
+    S --> T["清空内存上下文与 current 指针"]
 ```
 
 循环永远不变。每个课程只在循环之上叠加一个 harness 机制。
